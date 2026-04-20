@@ -1,0 +1,53 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Paper-Trade · schéma de persistance
+// - 1 seul compte (single-user, self-hosted)
+// - Positions indexées par pair Binance
+// - Journal complet des ordres exécutés
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Compte unique (ligne singleton id=1).
+model Account {
+  id             Int      @id @default(1)
+  cashBalance    Float
+  initialBalance Float
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+/// Position agrégée par paire.
+/// Une position fermée (quantity = 0) est supprimée.
+model Position {
+  id        Int      @id @default(autoincrement())
+  pair      String   @unique
+  quantity  Float
+  avgCost   Float
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([pair])
+}
+
+/// Journal immuable des ordres exécutés (paper-fill au prix spot courant).
+model Trade {
+  id          Int      @id @default(autoincrement())
+  pair        String
+  side        String   // 'buy' | 'sell'
+  quantity    Float    // base asset
+  price       Float    // prix de fill (USDC)
+  notional    Float    // quantity * price
+  fee         Float    // USDC
+  realizedPnl Float?   // renseigné uniquement pour les sells
+  createdAt   DateTime @default(now())
+
+  @@index([pair])
+  @@index([createdAt])
+}

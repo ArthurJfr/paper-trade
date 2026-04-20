@@ -1,0 +1,49 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Paper-Trade · Stylesheet d'entrée globale
+// Les variables/mixins sont injectés par Vite (cf. nuxt.config.ts).
+// ─────────────────────────────────────────────────────────────────────────────
+
+@use 'reset';
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  font-family: $font-sans;
+  font-size: 16px;
+  color: $color-text;
+  background: $color-bg;
+  line-height: $lh-normal;
+}
+
+body {
+  @include scrollbar;
+}
+
+::selection {
+  background: $color-accent-soft;
+  color: $color-accent;
+}
+
+// Typographie de base
+h1 { font-size: $fs-3xl; letter-spacing: -0.02em; }
+h2 { font-size: $fs-xl; }
+h3 { font-size: $fs-lg; }
+
+// Focus accessible par défaut
+:focus-visible {
+  @include focus-ring;
+}
+
+// Liens
+a:hover {
+  color: $color-accent;
+}
+
+// Transitions globales douces sur les thèmes futurs
+a,
+button {
+  transition: color $transition-fast, background-color $transition-fast, border-color $transition-fast;
+}

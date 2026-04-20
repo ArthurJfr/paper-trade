@@ -1,0 +1,38 @@
+name: paper-trade
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: paper-trade:latest
+    container_name: paper-trade
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+      DATABASE_URL: file:/app/data/paper-trade.db
+
+    ports:
+      - "${APP_PORT:-3000}:3000"
+
+    volumes:
+      - ./data:/app/data
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

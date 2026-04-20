@@ -1,0 +1,114 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Paper-Trade · Design Tokens
+// Dark-first, inspiré Bloomberg / TradingView.
+// Aucun @use externe pour rester un feuille de tokens pure.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─── Couleurs · backgrounds ────────────────────────────────────────────────
+$color-bg:           #0a0b0d;
+$color-surface:      #111317;
+$color-surface-2:    #181b21;
+$color-surface-3:    #222630;
+
+// ─── Couleurs · borders ────────────────────────────────────────────────────
+$color-border:       #23262e;
+$color-border-hover: #2d313a;
+
+// ─── Couleurs · text ───────────────────────────────────────────────────────
+$color-text:         #e8eaed;
+$color-text-muted:   #9aa0a6;
+$color-text-dim:     #5f6368;
+
+// ─── Couleurs · sémantique ─────────────────────────────────────────────────
+$color-accent:       #16c784;
+$color-accent-soft:  rgba(22, 199, 132, 0.12);
+$color-accent-hover: #1ad693;
+
+$color-danger:       #ea3943;
+$color-danger-soft:  rgba(234, 57, 67, 0.12);
+
+$color-warning:      #f5a623;
+$color-warning-soft: rgba(245, 166, 35, 0.12);
+
+$color-info:         #4dabf7;
+$color-info-soft:    rgba(77, 171, 247, 0.12);
+
+// ─── Couleurs · catégories crypto ──────────────────────────────────────────
+$categories: (
+  'layer1':   #f7931a,
+  'layer2':   #627eea,
+  'defi':     #ff007a,
+  'ai':       #9d4edd,
+  'gaming':   #38b6ff,
+  'memes':    #ffd166,
+  'rwa':      #06d6a0,
+  'stables':  #6c757d,
+  'infra':    #ef476f,
+);
+
+// ─── Typographie ───────────────────────────────────────────────────────────
+$font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+$font-mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+
+$fs-xs:  0.75rem;
+$fs-sm:  0.875rem;
+$fs-md:  1rem;
+$fs-lg:  1.125rem;
+$fs-xl:  1.25rem;
+$fs-2xl: 1.5rem;
+$fs-3xl: 2rem;
+$fs-4xl: 2.5rem;
+
+$fw-regular:  400;
+$fw-medium:   500;
+$fw-semibold: 600;
+$fw-bold:     700;
+
+$lh-tight:  1.2;
+$lh-normal: 1.5;
+$lh-loose:  1.75;
+
+// ─── Espacements (base 4px) ────────────────────────────────────────────────
+$space-xs:  0.25rem;
+$space-sm:  0.5rem;
+$space-md:  1rem;
+$space-lg:  1.5rem;
+$space-xl:  2rem;
+$space-2xl: 3rem;
+$space-3xl: 4rem;
+
+// ─── Layout ────────────────────────────────────────────────────────────────
+$sidebar-width:  240px;
+$header-height:  56px;
+$container-max:  1440px;
+
+// ─── Radius ────────────────────────────────────────────────────────────────
+$radius-sm:   4px;
+$radius-md:   8px;
+$radius-lg:   12px;
+$radius-xl:   16px;
+$radius-full: 9999px;
+
+// ─── Shadows ───────────────────────────────────────────────────────────────
+$shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+$shadow-md: 0 4px 8px rgba(0, 0, 0, 0.35);
+$shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
+
+// ─── Transitions ───────────────────────────────────────────────────────────
+$transition-fast:   120ms ease;
+$transition-normal: 200ms ease;
+$transition-slow:   320ms ease;
+
+// ─── Z-index ───────────────────────────────────────────────────────────────
+$z-base:     1;
+$z-sticky:   100;
+$z-dropdown: 200;
+$z-modal:    300;
+$z-toast:    400;
+
+// ─── Breakpoints ───────────────────────────────────────────────────────────
+$bp-sm:  640px;
+$bp-md:  768px;
+$bp-lg:  1024px;
+$bp-xl:  1280px;
+$bp-2xl: 1536px;

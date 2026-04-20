@@ -1,0 +1,41 @@
+{
+  "name": "paper-trade",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Visualisation crypto & paper trading — self-hosted dashboard",
+  "scripts": {
+    "predev": "prisma generate",
+    "dev": "nuxt dev",
+    "prebuild": "prisma generate",
+    "build": "nuxt build",
+    "preview": "nuxt preview",
+    "generate": "nuxt generate",
+    "postinstall": "nuxt prepare",
+    "typecheck": "nuxt typecheck",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@nuxt/icon": "^1.10.0",
+    "@pinia/nuxt": "^0.5.5",
+    "@prisma/client": "^6",
+    "nuxt": "^3.14.0",
+    "pinia": "^2.2.6",
+    "vue": "^3.5.13",
+    "vue-router": "^4.4.5"
+  },
+  "devDependencies": {
+    "@iconify-json/ph": "^1.2.2",
+    "@types/node": "^22.9.0",
+    "prisma": "^6",
+    "sass-embedded": "^1.81.0",
+    "typescript": "^5.6.3",
+    "vue-tsc": "^2.1.10"
+  },
+  "packageManager": "pnpm@9.12.3",
+  "engines": {
+    "node": ">=20"
+  }
+}

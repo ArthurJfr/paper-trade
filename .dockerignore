@@ -1,0 +1,43 @@
+# Contexte de build minimal pour paper-trade
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Dépendances & artefacts
+node_modules
+.pnpm-store
+.output
+.nuxt
+.nitro
+dist
+coverage
+
+# Données locales (ne jamais copier dans l'image)
+data
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# OS / éditeur
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+*.log
+
+# Docker meta
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Docs (pas utile au runtime)
+README.md
+*.md

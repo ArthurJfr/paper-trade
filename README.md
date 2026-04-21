@@ -138,7 +138,7 @@ paper-trade/
 ### Prérequis
 
 - **Node.js ≥ 20**
-- **pnpm** (recommandé) ou npm
+- **npm** (recommandé)
 - **Docker** (optionnel, pour le mode self-hosted)
 
 ### Installation locale
@@ -148,16 +148,16 @@ paper-trade/
 cd paper-trade
 
 # 2. Installer les dépendances
-pnpm install
+npm install
 
 # 3. Copier la config
 cp .env.example .env
 
 # 4. Initialiser la base SQLite
-pnpm db:migrate
+npm run db:migrate
 
 # 5. Lancer en dev
-pnpm dev
+npm run dev
 ```
 
 → Ouvre [http://localhost:3000](http://localhost:3000)
@@ -214,13 +214,14 @@ TRADING_FEE_BPS=10        # 0.10% de frais simulés
 
 | Commande | Description |
 |---|---|
-| `pnpm dev` | Lance Nuxt en mode dev avec HMR |
-| `pnpm build` | Build de production |
-| `pnpm preview` | Preview du build |
-| `pnpm db:migrate` | Applique les migrations Drizzle |
-| `pnpm db:studio` | Ouvre Drizzle Studio (GUI de la DB) |
-| `pnpm lint` | ESLint |
-| `pnpm typecheck` | Vérif TypeScript |
+| `npm run dev` | Lance Nuxt en mode dev avec HMR |
+| `npm run build` | Build de production |
+| `npm run preview` | Preview du build |
+| `npm run generate` | Génère le site statique |
+| `npm run db:generate` | Génère le client Prisma |
+| `npm run db:migrate` | Applique les migrations Prisma |
+| `npm run db:studio` | Ouvre Prisma Studio (GUI de la DB) |
+| `npm run typecheck` | Vérif TypeScript |
 
 ---
 

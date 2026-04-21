@@ -1,5 +1,7 @@
 <script setup lang="ts">
 const config = useRuntimeConfig()
+const router = useRouter()
+const route = useRoute()
 
 // Hydrate les stores marché + portefeuille (SSR) et ouvre la WebSocket Binance (client).
 const { store: marketStore } = await useMarket()
@@ -9,9 +11,9 @@ const portfolio = usePortfolioStore()
 const nav = [
   { to: '/',          label: 'Dashboard',    icon: 'ph:chart-line-up-bold' },
   { to: '/market',    label: 'Marché',       icon: 'ph:squares-four-bold' },
-  { to: '/portfolio', label: 'Portefeuille', icon: 'ph:wallet-bold' },
-  { to: '/journal',   label: 'Journal',      icon: 'ph:notebook-bold' },
-  { to: '/settings',  label: 'Réglages',     icon: 'ph:gear-six-bold' },
+  { to: '/portfolio', label: 'Portefeuille', icon: 'ph:wallet-bold', beta: true },
+  { to: '/journal',   label: 'Journal',      icon: 'ph:notebook-bold', beta: true },
+  { to: '/settings',  label: 'Réglages',     icon: 'ph:gear-six-bold', beta: true },
 ] as const
 
 const fmtCurrency = (n: number) =>
@@ -24,6 +26,83 @@ const fmtCurrency = (n: number) =>
 const equityLabel = computed(() => fmtCurrency(portfolio.equity))
 const perfPct = computed(() => portfolio.performancePct)
 const perfTrend = computed(() => trendOf(perfPct.value))
+
+const searchQuery = ref('')
+const searchInput = ref<HTMLInputElement | null>(null)
+const theme = ref<'dark' | 'light'>('dark')
+
+const marketAssets = computed(() => marketStore.taxonomy.assets)
+
+function isCurrentNav(to: string) {
+  if (to === '/market') return route.path === '/market' || route.path.startsWith('/token/')
+  return route.path === to
+}
+
+function focusSearch() {
+  searchInput.value?.focus()
+  searchInput.value?.select()
+}
+
+function resolveSearch(input: string) {
+  const q = input.trim().toLowerCase()
+  if (!q) return []
+  return marketAssets.value.filter((a) =>
+    a.symbol.toLowerCase() === q
+    || a.pair.toLowerCase() === q
+    || a.name.toLowerCase() === q
+    || a.symbol.toLowerCase().includes(q)
+    || a.pair.toLowerCase().includes(q)
+    || a.name.toLowerCase().includes(q),
+  )
+}
+
+async function submitSearch() {
+  const q = searchQuery.value.trim()
+  if (!q) return
+  const matches = resolveSearch(q)
+  if (matches.length === 1) {
+    await router.push(`/token/${matches[0]!.pair}`)
+    return
+  }
+  await router.push({ path: '/market', query: { q } })
+}
+
+onMounted(() => {
+  const savedTheme = localStorage.getItem('paper-trade-theme')
+  if (savedTheme === 'light' || savedTheme === 'dark') {
+    theme.value = savedTheme
+  } else {
+    theme.value = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+  }
+  document.documentElement.setAttribute('data-theme', theme.value)
+
+  const onKeydown = (e: KeyboardEvent) => {
+    const target = e.target as HTMLElement | null
+    const typingInInput = !!target && (
+      target.tagName === 'INPUT'
+      || target.tagName === 'TEXTAREA'
+      || target.isContentEditable
+    )
+    if (typingInInput) return
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault()
+      focusSearch()
+      return
+    }
+    if (e.key === '/') {
+      e.preventDefault()
+      focusSearch()
+    }
+  }
+  window.addEventListener('keydown', onKeydown)
+  onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+})
+
+function toggleTheme() {
+  theme.value = theme.value === 'dark' ? 'light' : 'dark'
+  document.documentElement.setAttribute('data-theme', theme.value)
+  localStorage.setItem('paper-trade-theme', theme.value)
+}
 </script>
 
 <template>
@@ -41,9 +120,12 @@ const perfTrend = computed(() => trendOf(perfPct.value))
           :key="item.to"
           :to="item.to"
           class="nav-item"
+          :class="{ current: isCurrentNav(item.to) }"
+          :aria-current="isCurrentNav(item.to) ? 'page' : undefined"
         >
           <Icon :name="item.icon" size="18" />
           <span>{{ item.label }}</span>
+          <span v-if="item.beta" class="nav-badge">BETA</span>
         </NuxtLink>
       </nav>
 
@@ -63,12 +145,21 @@ const perfTrend = computed(() => trendOf(perfPct.value))
 
     <main class="main">
       <header class="topbar">
-        <div class="search">
+        <form class="search" @submit.prevent="submitSearch">
           <Icon name="ph:magnifying-glass-bold" size="16" />
-          <input placeholder="Rechercher un actif, une catégorie…" />
+          <input
+            ref="searchInput"
+            v-model="searchQuery"
+            placeholder="Rechercher un actif (BTC, ETH, SOL...)"
+            type="search"
+            aria-label="Rechercher un actif"
+          />
           <kbd>⌘K</kbd>
-        </div>
+        </form>
         <div class="actions">
+          <button class="ghost" aria-label="Basculer le thème" @click="toggleTheme">
+            <Icon :name="theme === 'dark' ? 'ph:sun-bold' : 'ph:moon-bold'" size="18" />
+          </button>
           <button class="ghost" aria-label="Notifications">
             <Icon name="ph:bell-bold" size="18" />
           </button>
@@ -141,10 +232,27 @@ const perfTrend = computed(() => trendOf(perfPct.value))
     color: $color-text;
   }
 
-  &.router-link-active {
+  &.router-link-active,
+  &.current {
     background: $color-accent-soft;
     color: $color-accent;
   }
+
+  &:focus-visible {
+    outline: 2px solid $color-accent;
+    outline-offset: -1px;
+  }
+}
+
+.nav-badge {
+  margin-left: auto;
+  font-size: 10px;
+  font-family: $font-mono;
+  padding: 2px 6px;
+  border-radius: $radius-full;
+  border: 1px solid $color-border;
+  color: $color-text-dim;
+  background: $color-surface-3;
 }
 
 .sidebar-footer {
@@ -206,6 +314,10 @@ const perfTrend = computed(() => trendOf(perfPct.value))
 }
 
 .search {
+  &:focus-within {
+    border-color: $color-border-hover;
+  }
+
   @include row($space-sm);
   flex: 1;
   max-width: 420px;

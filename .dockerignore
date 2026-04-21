@@ -7,7 +7,6 @@
 
 # Dépendances & artefacts
 node_modules
-.pnpm-store
 .output
 .nuxt
 .nitro

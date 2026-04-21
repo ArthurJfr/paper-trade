@@ -4,6 +4,9 @@ import { useMarketStore } from '~/stores/market'
 useHead({ title: 'Dashboard · Paper-Trade' })
 
 const store = useMarketStore()
+const now = useNow(1000)
+const marketAgeSec = computed(() => store.dataAgeSec(now.value))
+const marketFreshness = computed(() => store.freshness(now.value))
 
 // ─── Stats en tête ────────────────────────────────────────────────────────
 const stats = computed(() => {
@@ -59,6 +62,9 @@ const stats = computed(() => {
           : 'Hors-ligne · données absentes'
         }}</span>
       </span>
+      <span class="freshness" :data-freshness="marketFreshness">
+        {{ marketAgeSec === null ? 'Données absentes' : `MAJ il y a ${marketAgeSec}s` }}
+      </span>
     </header>
 
     <!-- Stats -->
@@ -106,7 +112,7 @@ const stats = computed(() => {
           <h2>Top movers</h2>
           <p class="sub">Plus grosses variations sur 24 h — volume &gt; 100 K $</p>
         </div>
-        <span v-if="store.updatedAt" class="dim">MAJ il y a {{ Math.max(0, Math.round((Date.now() - store.updatedAt) / 1000)) }}s</span>
+        <span v-if="store.updatedAt" class="dim">MAJ il y a {{ marketAgeSec }}s</span>
       </div>
 
       <ul v-if="store.topMovers.length" class="movers">
@@ -156,6 +162,15 @@ const stats = computed(() => {
   }
 }
 
+.freshness {
+  font-size: $fs-xs;
+  font-family: $font-mono;
+  color: $color-text-muted;
+  &[data-freshness='fresh'] { color: $color-accent; }
+  &[data-freshness='delayed'] { color: $color-warning; }
+  &[data-freshness='stale'] { color: $color-danger; }
+}
+
 .chip {
   @include row($space-sm);
   padding: $space-xs $space-md;
@@ -170,7 +185,7 @@ const stats = computed(() => {
     height: 6px;
     border-radius: $radius-full;
     background: $color-text-dim;
-    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.02);
+    box-shadow: 0 0 0 4px var(--chip-dot-shadow);
   }
 
   &[data-status='live'] .dot {

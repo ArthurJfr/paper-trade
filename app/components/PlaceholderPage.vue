@@ -16,6 +16,16 @@ defineProps<{
       <h1>{{ title }}</h1>
       <p>{{ description }}</p>
       <span v-if="version" class="tag">Prévu pour {{ version }}</span>
+      <div class="actions">
+        <NuxtLink to="/market" class="btn">
+          <Icon name="ph:squares-four-bold" size="14" />
+          Aller au Marché
+        </NuxtLink>
+        <NuxtLink to="/" class="btn ghost">
+          <Icon name="ph:house-bold" size="14" />
+          Retour Dashboard
+        </NuxtLink>
+      </div>
     </div>
   </section>
 </template>
@@ -62,5 +72,28 @@ p {
   font-size: $fs-xs;
   color: $color-text-muted;
   font-family: $font-mono;
+}
+
+.actions {
+  @include row($space-sm);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.btn {
+  @include row($space-xs);
+  padding: $space-xs $space-md;
+  border-radius: $radius-sm;
+  font-size: $fs-sm;
+  border: 1px solid $color-border;
+  background: $color-surface-2;
+  color: $color-text;
+
+  &:hover { border-color: $color-border-hover; }
+
+  &.ghost {
+    color: $color-text-muted;
+    background: transparent;
+  }
 }
 </style>

@@ -5,33 +5,33 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Couleurs · backgrounds ────────────────────────────────────────────────
-$color-bg:           #0a0b0d;
-$color-surface:      #111317;
-$color-surface-2:    #181b21;
-$color-surface-3:    #222630;
+$color-bg:           var(--color-bg);
+$color-surface:      var(--color-surface);
+$color-surface-2:    var(--color-surface-2);
+$color-surface-3:    var(--color-surface-3);
 
 // ─── Couleurs · borders ────────────────────────────────────────────────────
-$color-border:       #23262e;
-$color-border-hover: #2d313a;
+$color-border:       var(--color-border);
+$color-border-hover: var(--color-border-hover);
 
 // ─── Couleurs · text ───────────────────────────────────────────────────────
-$color-text:         #e8eaed;
-$color-text-muted:   #9aa0a6;
-$color-text-dim:     #5f6368;
+$color-text:         var(--color-text);
+$color-text-muted:   var(--color-text-muted);
+$color-text-dim:     var(--color-text-dim);
 
 // ─── Couleurs · sémantique ─────────────────────────────────────────────────
-$color-accent:       #16c784;
-$color-accent-soft:  rgba(22, 199, 132, 0.12);
-$color-accent-hover: #1ad693;
+$color-accent:       var(--color-accent);
+$color-accent-soft:  var(--color-accent-soft);
+$color-accent-hover: var(--color-accent-hover);
 
-$color-danger:       #ea3943;
-$color-danger-soft:  rgba(234, 57, 67, 0.12);
+$color-danger:       var(--color-danger);
+$color-danger-soft:  var(--color-danger-soft);
 
-$color-warning:      #f5a623;
-$color-warning-soft: rgba(245, 166, 35, 0.12);
+$color-warning:      var(--color-warning);
+$color-warning-soft: var(--color-warning-soft);
 
-$color-info:         #4dabf7;
-$color-info-soft:    rgba(77, 171, 247, 0.12);
+$color-info:         var(--color-info);
+$color-info-soft:    var(--color-info-soft);
 
 // ─── Couleurs · catégories crypto ──────────────────────────────────────────
 $categories: (

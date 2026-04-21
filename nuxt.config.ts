@@ -16,6 +16,11 @@ export default defineNuxtConfig({
   // Les fichiers partiels (`_variables.scss`, `_mixins.scss`) gèrent leur propre scope
   // interne ; ici on les expose à tous les `<style lang="scss">` et à `main.scss`.
   vite: {
+    optimizeDeps: {
+      // Empêche Vite de pré-bundler `nuxt/dist/*`, ce qui peut casser
+      // la résolution des imports virtuels Nuxt comme `#app-manifest`.
+      exclude: ['nuxt'],
+    },
     css: {
       preprocessorOptions: {
         scss: {

@@ -92,6 +92,19 @@ export const useMarketStore = defineStore('market', () => {
   const isLoaded = computed(() => Object.keys(tickers.value).length > 0)
   const pairs    = computed(() => taxonomy.value.assets.map(a => a.pair))
 
+  function dataAgeSec(nowTs: number) {
+    if (!updatedAt.value) return null
+    return Math.max(0, Math.round((nowTs - updatedAt.value) / 1000))
+  }
+
+  function freshness(nowTs: number): 'fresh' | 'delayed' | 'stale' {
+    const age = dataAgeSec(nowTs)
+    if (age === null) return 'stale'
+    if (age <= 3) return 'fresh'
+    if (age <= 10) return 'delayed'
+    return 'stale'
+  }
+
   // ─── Actions ──────────────────────────────────────────────────────────
   function hydrate(snap: MarketSnapshot) {
     taxonomy.value  = snap.taxonomy
@@ -127,6 +140,8 @@ export const useMarketStore = defineStore('market', () => {
     totalVolume24h,
     isLoaded,
     pairs,
+    dataAgeSec,
+    freshness,
     // actions
     hydrate,
     applyUpdates,

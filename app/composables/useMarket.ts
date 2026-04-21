@@ -33,6 +33,38 @@ export async function useMarket() {
       onStatus: s => store.setStreamStatus(s),
       throttleMs: 500,
     })
+
+    let restPollTimer: ReturnType<typeof setInterval> | null = null
+
+    const stopRestPolling = () => {
+      if (restPollTimer) {
+        clearInterval(restPollTimer)
+        restPollTimer = null
+      }
+    }
+
+    const startRestPolling = () => {
+      if (restPollTimer) return
+      restPollTimer = setInterval(() => {
+        refresh()
+      }, 3000)
+    }
+
+    watch(
+      () => store.streamStatus,
+      (status) => {
+        if (status === 'live' || status === 'connecting') {
+          stopRestPolling()
+          return
+        }
+        startRestPolling()
+      },
+      { immediate: true },
+    )
+
+    onBeforeUnmount(() => {
+      stopRestPolling()
+    })
   }
 
   return { error, refresh, store }

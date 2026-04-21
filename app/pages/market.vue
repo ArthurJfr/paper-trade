@@ -5,6 +5,9 @@ import { useMarketStore } from '~/stores/market'
 useHead({ title: 'Marché · Paper-Trade' })
 
 const store = useMarketStore()
+const now = useNow(1000)
+const marketAgeSec = computed(() => store.dataAgeSec(now.value))
+const marketFreshness = computed(() => store.freshness(now.value))
 const route = useRoute()
 const router = useRouter()
 
@@ -12,7 +15,7 @@ const router = useRouter()
 const filterCategory = ref<'all' | CategoryKey>(
   (route.query.cat as CategoryKey) || 'all',
 )
-const searchQuery = ref('')
+const searchQuery = ref(typeof route.query.q === 'string' ? route.query.q : '')
 
 type SortKey = 'symbol' | 'category' | 'price' | 'perf' | 'volume'
 type SortDir = 'asc' | 'desc'
@@ -26,6 +29,18 @@ watch([filterCategory, sortBy, sortDir], ([cat, by, dir]) => {
   if (cat !== 'all')   query.cat = cat
   if (by !== 'volume') query.sort = by
   if (dir !== 'desc')  query.dir = dir
+  const q = searchQuery.value.trim()
+  if (q) query.q = q
+  router.replace({ query })
+})
+
+watch(searchQuery, () => {
+  const query: Record<string, string> = {}
+  if (filterCategory.value !== 'all') query.cat = filterCategory.value
+  if (sortBy.value !== 'volume') query.sort = sortBy.value
+  if (sortDir.value !== 'desc') query.dir = sortDir.value
+  const q = searchQuery.value.trim()
+  if (q) query.q = q
   router.replace({ query })
 })
 
@@ -43,7 +58,7 @@ const rows = computed<Row[]>(() =>
     return {
       asset: a,
       ticker: store.tickers[a.pair] ?? null,
-      categoryColor: cat?.color ?? '#5f6368',
+      categoryColor: cat?.color ?? 'var(--color-text-dim)',
       categoryLabel: cat?.label ?? a.category,
     }
   }),
@@ -114,6 +129,21 @@ const columns: { key: SortKey, label: string, className: string }[] = [
   { key: 'volume',   label: 'Volume 24 h', className: 'col-num' },
 ]
 
+const sortPresets: { id: string, label: string, sort: SortKey, dir: SortDir }[] = [
+  { id: 'gainers', label: 'Top gainers', sort: 'perf', dir: 'desc' },
+  { id: 'losers', label: 'Top losers', sort: 'perf', dir: 'asc' },
+  { id: 'volume', label: 'Plus gros volumes', sort: 'volume', dir: 'desc' },
+]
+
+const activePreset = computed(() =>
+  sortPresets.find(p => p.sort === sortBy.value && p.dir === sortDir.value)?.id ?? null,
+)
+
+function applyPreset(preset: { sort: SortKey, dir: SortDir }) {
+  sortBy.value = preset.sort
+  sortDir.value = preset.dir
+}
+
 // ─── Stats globales (sur le filtre courant) ────────────────────────────────
 const summary = computed(() => {
   const tickers = filtered.value.map(r => r.ticker).filter((t): t is Ticker => t !== null)
@@ -137,7 +167,7 @@ const heatmapRows = computed<Row[]>(() =>
 // ─── Catégories pour les pills (avec compteur) ─────────────────────────────
 const categoryPills = computed(() => {
   return [
-    { key: 'all' as const, label: 'Tout', color: '#9aa0a6', count: rows.value.length },
+    { key: 'all' as const, label: 'Tout', color: 'var(--color-text-muted)', count: rows.value.length },
     ...store.taxonomy.categories.map(c => ({
       key: c.key,
       label: c.label,
@@ -162,6 +192,9 @@ const categoryPills = computed(() => {
         <span class="dot" />
         {{ store.streamStatus === 'live' ? 'Live · Binance WS' : store.streamStatus }}
       </span>
+      <span class="freshness" :data-freshness="marketFreshness">
+        {{ marketAgeSec === null ? 'Données absentes' : `MAJ ${marketAgeSec}s` }}
+      </span>
     </header>
 
     <!-- Stats -->
@@ -178,12 +211,12 @@ const categoryPills = computed(() => {
       </article>
       <article class="stat">
         <span class="label">Gainers</span>
-        <strong class="value" style="color: var(--color-accent, #16c784)">{{ summary.gainers }}</strong>
+        <strong class="value" style="color: var(--color-accent)">{{ summary.gainers }}</strong>
         <span class="sub">sur {{ summary.count }}</span>
       </article>
       <article class="stat">
         <span class="label">Losers</span>
-        <strong class="value" style="color: var(--color-danger, #ea3943)">{{ summary.losers }}</strong>
+        <strong class="value" style="color: var(--color-danger)">{{ summary.losers }}</strong>
         <span class="sub">sur {{ summary.count }}</span>
       </article>
     </div>
@@ -212,6 +245,18 @@ const categoryPills = computed(() => {
           type="search"
         />
       </div>
+    </div>
+
+    <div class="presets">
+      <button
+        v-for="preset in sortPresets"
+        :key="preset.id"
+        class="preset"
+        :class="{ active: activePreset === preset.id }"
+        @click="applyPreset(preset)"
+      >
+        {{ preset.label }}
+      </button>
     </div>
 
     <!-- Heatmap -->
@@ -253,7 +298,7 @@ const categoryPills = computed(() => {
         <p class="sub">Clique sur une colonne pour trier · {{ sorted.length }} résultat{{ sorted.length > 1 ? 's' : '' }}</p>
       </div>
       <div class="table-wrap">
-        <table class="assets-table">
+        <table v-if="sorted.length" class="assets-table">
           <thead>
             <tr>
               <th
@@ -305,6 +350,10 @@ const categoryPills = computed(() => {
             </tr>
           </tbody>
         </table>
+        <div v-else class="table-empty">
+          <Icon name="ph:magnifying-glass-bold" size="18" />
+          <p>Aucun actif ne correspond à la recherche actuelle.</p>
+        </div>
       </div>
     </section>
   </section>
@@ -329,6 +378,15 @@ const categoryPills = computed(() => {
     font-size: $fs-sm;
     margin-top: $space-xs;
   }
+}
+
+.freshness {
+  font-size: $fs-xs;
+  font-family: $font-mono;
+  color: $color-text-muted;
+  &[data-freshness='fresh'] { color: $color-accent; }
+  &[data-freshness='delayed'] { color: $color-warning; }
+  &[data-freshness='stale'] { color: $color-danger; }
 }
 
 .chip {
@@ -464,6 +522,33 @@ const categoryPills = computed(() => {
   }
 }
 
+.presets {
+  @include row($space-sm);
+  flex-wrap: wrap;
+}
+
+.preset {
+  padding: $space-xs $space-md;
+  font-size: $fs-xs;
+  font-weight: $fw-medium;
+  border-radius: $radius-full;
+  border: 1px solid $color-border;
+  background: $color-surface;
+  color: $color-text-muted;
+  cursor: pointer;
+
+  &:hover {
+    border-color: $color-border-hover;
+    color: $color-text;
+  }
+
+  &.active {
+    border-color: $color-accent;
+    color: $color-accent;
+    background: $color-accent-soft;
+  }
+}
+
 // ─── Blocks ──────────────────────────────────────────────────────────────
 .block { @include stack($space-md); }
 
@@ -484,7 +569,7 @@ const categoryPills = computed(() => {
   position: relative;
   padding: $space-md;
   border-radius: $radius-md;
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--heatmap-tile-border);
   cursor: pointer;
   text-decoration: none;
   color: inherit;
@@ -503,7 +588,7 @@ const categoryPills = computed(() => {
 
   &:hover {
     transform: translateY(-1px);
-    border-color: rgba(255, 255, 255, 0.12);
+    border-color: var(--heatmap-tile-border-hover);
     z-index: 1;
   }
 
@@ -517,14 +602,14 @@ const categoryPills = computed(() => {
   .tile-perf {
     font-size: $fs-lg;
     @include mono-nums;
-    &[data-trend='up']   { color: #a6f4c5; }
-    &[data-trend='down'] { color: #fca5a5; }
+    &[data-trend='up']   { color: var(--heatmap-tile-up); }
+    &[data-trend='down'] { color: var(--heatmap-tile-down); }
     &[data-trend='flat'] { color: $color-text-muted; }
   }
 
   .tile-price {
     font-size: $fs-xs;
-    color: rgba(255, 255, 255, 0.65);
+    color: var(--heatmap-tile-price);
     @include mono-nums;
     @include truncate;
   }
@@ -544,6 +629,14 @@ const categoryPills = computed(() => {
   @include card;
   padding: 0;
   overflow-x: auto;
+}
+
+.table-empty {
+  @include flex-center;
+  @include stack($space-sm);
+  color: $color-text-muted;
+  font-size: $fs-sm;
+  min-height: 180px;
 }
 
 .assets-table {

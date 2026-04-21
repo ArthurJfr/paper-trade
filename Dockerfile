@@ -11,21 +11,19 @@ FROM node:${NODE_VERSION} AS deps
 WORKDIR /app
 
 RUN apk add --no-cache libc6-compat openssl \
- && corepack enable \
- && corepack prepare pnpm@latest --activate
+ && corepack enable
 
-COPY package.json pnpm-lock.yaml* .npmrc* ./
-# Utilise le lockfile s'il existe (build reproductible), sinon le génère.
-RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
-    if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi
+COPY package.json package-lock.json* .npmrc* ./
+# Utilise le lockfile npm s'il existe (build reproductible), sinon l'installe sans lock.
+RUN --mount=type=cache,id=npm,target=/root/.npm \
+    if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 # ─── Stage 2 · build ─────────────────────────────────────────────────────────
 FROM node:${NODE_VERSION} AS build
 WORKDIR /app
 
 RUN apk add --no-cache openssl \
- && corepack enable \
- && corepack prepare pnpm@latest --activate
+ && corepack enable
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -34,8 +32,8 @@ ENV NODE_ENV=production
 ENV NITRO_PRESET=node-server
 
 # Génère le client Prisma (binaires natifs) avant le build Nuxt.
-RUN pnpm prisma generate \
- && pnpm build
+RUN npm run db:generate \
+ && npm run build
 
 # ─── Stage 3 · runtime ───────────────────────────────────────────────────────
 FROM node:${NODE_VERSION} AS runtime

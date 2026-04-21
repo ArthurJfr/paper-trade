@@ -4,9 +4,11 @@ import type { OrderBookSnapshot, StreamStatus } from '~~/shared/types/market'
 const props = defineProps<{
   book: OrderBookSnapshot | null
   status: StreamStatus
+  sourceMode?: 'ws' | 'rest'
   depth?: number // nombre de niveaux à afficher par côté
 }>()
 
+const now = useNow(1000)
 const rows = computed(() => props.depth ?? 14)
 
 interface Row { price: number; quantity: number; cum: number; cumPct: number }
@@ -38,6 +40,19 @@ const spread = computed(() => {
   return { bid, ask, mid, abs: ask - bid, pct: ((ask - bid) / mid) * 100 }
 })
 
+const bookAgeSec = computed(() => {
+  if (!props.book?.updatedAt) return null
+  return Math.max(0, Math.round((now.value - props.book.updatedAt) / 1000))
+})
+
+const bookFreshness = computed<'fresh' | 'delayed' | 'stale'>(() => {
+  const age = bookAgeSec.value
+  if (age === null) return 'stale'
+  if (age <= 1) return 'fresh'
+  if (age <= 3) return 'delayed'
+  return 'stale'
+})
+
 const fmtQty = (q: number) => {
   if (q === 0) return '—'
   if (q >= 1000) return q.toLocaleString('en-US', { maximumFractionDigits: 0 })
@@ -51,10 +66,18 @@ const fmtQty = (q: number) => {
   <section class="ob">
     <header class="ob-head">
       <h3>Order book</h3>
-      <span class="chip" :data-status="status">
-        <span class="dot" />
-        {{ status === 'live' ? 'Live · 100 ms' : status }}
-      </span>
+      <div class="head-meta">
+        <span class="source" :data-source="props.sourceMode ?? 'ws'">
+          Source: {{ (props.sourceMode ?? 'ws') === 'ws' ? 'WS' : 'REST fallback' }}
+        </span>
+        <span class="freshness" :data-freshness="bookFreshness">
+          {{ bookAgeSec === null ? 'MAJ —' : `MAJ ${bookAgeSec}s` }}
+        </span>
+        <span class="chip" :data-status="status">
+          <span class="dot" />
+          {{ status === 'live' ? 'Live · 100 ms' : status }}
+        </span>
+      </div>
     </header>
 
     <div class="ob-cols">
@@ -127,6 +150,27 @@ const fmtQty = (q: number) => {
   @include flex-between;
 
   h3 { font-size: $fs-sm; font-weight: $fw-semibold; }
+}
+
+.head-meta {
+  @include row($space-sm);
+}
+
+.freshness {
+  font-size: 10px;
+  font-family: $font-mono;
+  color: $color-text-dim;
+  &[data-freshness='fresh'] { color: $color-accent; }
+  &[data-freshness='delayed'] { color: $color-warning; }
+  &[data-freshness='stale'] { color: $color-danger; }
+}
+
+.source {
+  font-size: 10px;
+  font-family: $font-mono;
+  color: $color-text-dim;
+  &[data-source='ws'] { color: $color-accent; }
+  &[data-source='rest'] { color: $color-warning; }
 }
 
 .chip {

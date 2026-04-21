@@ -5,6 +5,7 @@ import { useMarketStore } from '~/stores/market'
 const route = useRoute()
 const router = useRouter()
 const store = useMarketStore()
+const now = useNow(1000)
 
 // ─── Pair : normalisation + validation ─────────────────────────────────────
 const rawPair = String(route.params.pair ?? '')
@@ -20,6 +21,11 @@ const category = computed(() =>
   asset.value ? store.categoryByKey.get(asset.value.category) : undefined,
 )
 const ticker = computed(() => store.tickers[pair] ?? null)
+const marketAgeSec = computed(() => store.dataAgeSec(now.value))
+const marketFreshness = computed(() => store.freshness(now.value))
+const orderBookSourceMode = computed<'ws' | 'rest'>(() =>
+  store.streamStatus === 'live' ? 'ws' : 'rest',
+)
 
 // ─── Intervalle du chart (synchronisé avec l'URL) ──────────────────────────
 const INTERVALS: { key: KlineInterval, label: string }[] = [
@@ -30,6 +36,10 @@ const INTERVALS: { key: KlineInterval, label: string }[] = [
   { key: '4h',  label: '4H' },
   { key: '1d',  label: '1J' },
   { key: '1w',  label: '1S' },
+]
+const INTERVAL_SHORTCUTS: { id: string, label: string, key: KlineInterval }[] = [
+  { id: 'intraday', label: 'Intraday', key: '15m' },
+  { id: 'swing', label: 'Swing', key: '4h' },
 ]
 
 const initialInterval = (route.query.i as KlineInterval) || '1h'
@@ -93,6 +103,12 @@ const pageTitle = computed(() => `${asset.value?.symbol ?? pair} · Paper-Trade`
 useHead({ title: pageTitle })
 
 function selectInterval(i: KlineInterval) { interval.value = i }
+function applyShortcut(i: KlineInterval) { interval.value = i }
+async function resetView() {
+  interval.value = '1h'
+  await router.replace({ query: {} })
+  if (process.client) window.scrollTo({ top: 0, behavior: 'smooth' })
+}
 </script>
 
 <template>
@@ -129,6 +145,9 @@ function selectInterval(i: KlineInterval) { interval.value = i }
               {{ fmtPerf(ticker.changePct) }} sur 24 h
             </span>
             <span v-else class="dim">—</span>
+            <span class="freshness" :data-freshness="marketFreshness">
+              {{ marketAgeSec === null ? 'offline' : `tick ${marketAgeSec}s` }}
+            </span>
           </div>
         </div>
       </div>
@@ -139,16 +158,30 @@ function selectInterval(i: KlineInterval) { interval.value = i }
       <section class="chart-block">
         <div class="chart-head">
           <h2 class="sr-only">Historique de prix</h2>
-          <div class="intervals" role="tablist" aria-label="Intervalle">
-            <button
-              v-for="i in INTERVALS"
-              :key="i.key"
-              class="interval"
-              :class="{ active: interval === i.key }"
-              role="tab"
-              :aria-selected="interval === i.key"
-              @click="selectInterval(i.key)"
-            >{{ i.label }}</button>
+          <div class="chart-controls">
+            <div class="shortcuts">
+              <button
+                v-for="s in INTERVAL_SHORTCUTS"
+                :key="s.id"
+                class="shortcut"
+                :class="{ active: interval === s.key }"
+                @click="applyShortcut(s.key)"
+              >
+                {{ s.label }}
+              </button>
+              <button class="shortcut reset" @click="resetView">Reset vue</button>
+            </div>
+            <div class="intervals" role="tablist" aria-label="Intervalle">
+              <button
+                v-for="i in INTERVALS"
+                :key="i.key"
+                class="interval"
+                :class="{ active: interval === i.key }"
+                role="tab"
+                :aria-selected="interval === i.key"
+                @click="selectInterval(i.key)"
+              >{{ i.label }}</button>
+            </div>
           </div>
         </div>
 
@@ -176,7 +209,7 @@ function selectInterval(i: KlineInterval) { interval.value = i }
           :price="currentPrice"
           :symbol="asset?.symbol"
         />
-        <OrderBook :book="book" :status="obStatus" :depth="14" />
+        <OrderBook :book="book" :status="obStatus" :depth="14" :source-mode="orderBookSourceMode" />
       </aside>
     </div>
 
@@ -300,12 +333,23 @@ function selectInterval(i: KlineInterval) { interval.value = i }
   .sub-row {
     font-size: $fs-sm;
     @include mono-nums;
+    @include row($space-sm);
+    justify-content: flex-end;
 
     .perf {
       &[data-trend='up']   { color: $color-accent; }
       &[data-trend='down'] { color: $color-danger; }
     }
   }
+}
+
+.freshness {
+  font-size: $fs-xs;
+  font-family: $font-mono;
+  color: $color-text-muted;
+  &[data-freshness='fresh'] { color: $color-accent; }
+  &[data-freshness='delayed'] { color: $color-warning; }
+  &[data-freshness='stale'] { color: $color-danger; }
 }
 
 // ─── Body ─────────────────────────────────────────────────────────────────
@@ -329,6 +373,30 @@ function selectInterval(i: KlineInterval) { interval.value = i }
 .chart-head {
   @include flex-between;
   gap: $space-md;
+}
+
+.chart-controls {
+  @include stack($space-sm);
+  width: 100%;
+}
+
+.shortcuts {
+  @include row($space-sm);
+  flex-wrap: wrap;
+}
+
+.shortcut {
+  padding: 2px $space-sm;
+  border: 1px solid $color-border;
+  border-radius: $radius-full;
+  background: $color-surface;
+  color: $color-text-muted;
+  font-size: $fs-xs;
+  cursor: pointer;
+
+  &:hover { color: $color-text; border-color: $color-border-hover; }
+  &.active { color: $color-accent; border-color: $color-accent; }
+  &.reset { margin-left: auto; }
 }
 
 .intervals {

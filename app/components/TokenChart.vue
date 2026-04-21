@@ -171,6 +171,13 @@ const tooltipLeftPct = computed(() => {
   if (!hovered.value) return 0
   return (hovered.value.x / W) * 100
 })
+
+const tooltipStyle = computed(() => {
+  const pct = tooltipLeftPct.value
+  if (pct < 12) return { left: '0%', transform: 'translateX(0)' }
+  if (pct > 88) return { left: '100%', transform: 'translateX(-100%)' }
+  return { left: `${pct}%`, transform: 'translateX(-50%)' }
+})
 </script>
 
 <template>
@@ -245,7 +252,7 @@ const tooltipLeftPct = computed(() => {
     </svg>
 
     <!-- Tooltip HTML (positionné en % du container) -->
-    <div v-if="hovered" class="tooltip" :style="{ left: `${tooltipLeftPct}%` }">
+    <div v-if="hovered" class="tooltip" :style="tooltipStyle">
       <span class="t-time">{{ fmtHoverTime(hovered.k.openTime) }}</span>
       <div class="t-grid">
         <span class="label">O</span><span class="val">{{ fmtPrice(hovered.k.open) }}</span>
@@ -305,14 +312,13 @@ svg {
   position: absolute;
   top: $space-md;
   padding: $space-sm $space-md;
-  background: rgba(15, 15, 15, 0.92);
+  background: var(--tooltip-bg);
   border: 1px solid $color-border-hover;
   border-radius: $radius-sm;
   font-size: $fs-xs;
   color: $color-text;
   backdrop-filter: blur(8px);
   pointer-events: none;
-  transform: translateX(-50%);
   white-space: nowrap;
   z-index: 2;
 

@@ -44,6 +44,10 @@ const bookAgeSec = computed(() => {
   if (!props.book?.updatedAt) return null
   return Math.max(0, Math.round((now.value - props.book.updatedAt) / 1000))
 })
+const bookLatencyMs = computed(() => {
+  if (!props.book?.updatedAt) return null
+  return Math.max(0, now.value - props.book.updatedAt)
+})
 
 const bookFreshness = computed<'fresh' | 'delayed' | 'stale'>(() => {
   const age = bookAgeSec.value
@@ -72,6 +76,9 @@ const fmtQty = (q: number) => {
         </span>
         <span class="freshness" :data-freshness="bookFreshness">
           {{ bookAgeSec === null ? 'MAJ —' : `MAJ ${bookAgeSec}s` }}
+        </span>
+        <span class="latency">
+          {{ bookLatencyMs === null ? 'latence —' : `${bookLatencyMs}ms` }}
         </span>
         <span class="chip" :data-status="status">
           <span class="dot" />
@@ -173,6 +180,12 @@ const fmtQty = (q: number) => {
   &[data-source='rest'] { color: $color-warning; }
 }
 
+.latency {
+  font-size: 10px;
+  font-family: $font-mono;
+  color: $color-text-dim;
+}
+
 .chip {
   @include row($space-xs);
   padding: 2px $space-sm;
@@ -245,14 +258,14 @@ const fmtQty = (q: number) => {
 .asks .ob-row {
   .p { color: $color-danger; }
   &::before {
-    background: rgba(234, 57, 67, 0.13);
+    background: var(--orderbook-ask-fill);
     right: 0; left: auto;
   }
 }
 .bids .ob-row {
   .p { color: $color-accent; }
   &::before {
-    background: rgba(22, 199, 132, 0.13);
+    background: var(--orderbook-bid-fill);
     right: 0; left: auto;
   }
 }

@@ -8,6 +8,10 @@ const store = useMarketStore()
 const now = useNow(1000)
 const marketAgeSec = computed(() => store.dataAgeSec(now.value))
 const marketFreshness = computed(() => store.freshness(now.value))
+const marketLatency = computed(() => store.latencyMs(now.value))
+const lastSwitchSec = computed(() =>
+  store.lastModeSwitchAt ? Math.max(0, Math.round((now.value - store.lastModeSwitchAt) / 1000)) : null,
+)
 const route = useRoute()
 const router = useRouter()
 
@@ -176,6 +180,10 @@ const categoryPills = computed(() => {
     })),
   ]
 })
+
+const unavailableCount = computed(() =>
+  rows.value.filter(r => store.pairDataState(r.asset.pair) === 'unavailable').length,
+)
 </script>
 
 <template>
@@ -194,6 +202,11 @@ const categoryPills = computed(() => {
       </span>
       <span class="freshness" :data-freshness="marketFreshness">
         {{ marketAgeSec === null ? 'Données absentes' : `MAJ ${marketAgeSec}s` }}
+      </span>
+      <span class="meta">
+        {{ store.transportMode.toUpperCase() }} ·
+        {{ marketLatency === null ? 'latence —' : `${marketLatency}ms` }} ·
+        switch {{ store.fallbackSwitchCount }}{{ lastSwitchSec === null ? '' : ` (il y a ${lastSwitchSec}s)` }}
       </span>
     </header>
 
@@ -253,6 +266,7 @@ const categoryPills = computed(() => {
         :key="preset.id"
         class="preset"
         :class="{ active: activePreset === preset.id }"
+        :aria-label="`Activer le preset ${preset.label}`"
         @click="applyPreset(preset)"
       >
         {{ preset.label }}
@@ -295,7 +309,10 @@ const categoryPills = computed(() => {
     <section class="block">
       <div class="block-head">
         <h2>Actifs</h2>
-        <p class="sub">Clique sur une colonne pour trier · {{ sorted.length }} résultat{{ sorted.length > 1 ? 's' : '' }}</p>
+        <p class="sub">
+          Clique sur une colonne pour trier · {{ sorted.length }} résultat{{ sorted.length > 1 ? 's' : '' }}
+          <span v-if="unavailableCount"> · {{ unavailableCount }} pair{{ unavailableCount > 1 ? 's' : '' }} indisponible{{ unavailableCount > 1 ? 's' : '' }}</span>
+        </p>
       </div>
       <div class="table-wrap">
         <table v-if="sorted.length" class="assets-table">
@@ -339,14 +356,14 @@ const categoryPills = computed(() => {
                   {{ r.categoryLabel }}
                 </span>
               </td>
-              <td class="col-num">{{ r.ticker ? '$' + fmtPrice(r.ticker.price) : '—' }}</td>
+              <td class="col-num">{{ r.ticker ? '$' + fmtPrice(r.ticker.price) : store.pairDataLabel(r.asset.pair) }}</td>
               <td class="col-num">
                 <span v-if="r.ticker" class="perf" :data-trend="trendOf(r.ticker.changePct)">
                   {{ fmtPerf(r.ticker.changePct) }}
                 </span>
-                <span v-else class="dim">—</span>
+                <span v-else class="dim">{{ store.pairDataLabel(r.asset.pair) }}</span>
               </td>
-              <td class="col-num">{{ r.ticker ? fmtVolume(r.ticker.volume24h) : '—' }}</td>
+              <td class="col-num">{{ r.ticker ? fmtVolume(r.ticker.volume24h) : store.pairDataLabel(r.asset.pair) }}</td>
             </tr>
           </tbody>
         </table>
@@ -387,6 +404,12 @@ const categoryPills = computed(() => {
   &[data-freshness='fresh'] { color: $color-accent; }
   &[data-freshness='delayed'] { color: $color-warning; }
   &[data-freshness='stale'] { color: $color-danger; }
+}
+
+.meta {
+  font-size: $fs-xs;
+  color: $color-text-dim;
+  font-family: $font-mono;
 }
 
 .chip {

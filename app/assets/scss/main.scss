@@ -34,6 +34,11 @@
   --heatmap-tile-down: #fca5a5;
   --heatmap-tile-price: rgba(255, 255, 255, 0.7);
   --chip-dot-shadow: rgba(255, 255, 255, 0.02);
+  --chart-line-up: #16c784;
+  --chart-line-down: #ea3943;
+  --chart-line-flat: #9aa0a6;
+  --orderbook-ask-fill: rgba(234, 57, 67, 0.13);
+  --orderbook-bid-fill: rgba(22, 199, 132, 0.13);
 }
 
 :root[data-theme='light'] {
@@ -65,6 +70,11 @@
   --heatmap-tile-down: #b42318;
   --heatmap-tile-price: rgba(17, 24, 39, 0.72);
   --chip-dot-shadow: rgba(17, 24, 39, 0.06);
+  --chart-line-up: #0ea86f;
+  --chart-line-down: #dc2626;
+  --chart-line-flat: #6b7280;
+  --orderbook-ask-fill: rgba(220, 38, 38, 0.16);
+  --orderbook-bid-fill: rgba(14, 168, 111, 0.16);
 }
 
 html,

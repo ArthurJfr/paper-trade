@@ -19,6 +19,9 @@ export const useMarketStore = defineStore('market', () => {
   const streamStatus  = ref<StreamStatus>('idle')
   const source        = ref<'binance' | 'mock'>('mock')
   const updatedAt     = ref<number>(0)
+  const transportMode = ref<'ws' | 'rest'>('rest')
+  const fallbackSwitchCount = ref<number>(0)
+  const lastModeSwitchAt = ref<number>(0)
 
   // ─── Lookups ──────────────────────────────────────────────────────────
   const assetByPair = computed<Map<string, TaxonomyAsset>>(() => {
@@ -97,12 +100,31 @@ export const useMarketStore = defineStore('market', () => {
     return Math.max(0, Math.round((nowTs - updatedAt.value) / 1000))
   }
 
+  function latencyMs(nowTs: number) {
+    if (!updatedAt.value) return null
+    return Math.max(0, nowTs - updatedAt.value)
+  }
+
   function freshness(nowTs: number): 'fresh' | 'delayed' | 'stale' {
     const age = dataAgeSec(nowTs)
     if (age === null) return 'stale'
     if (age <= 3) return 'fresh'
     if (age <= 10) return 'delayed'
     return 'stale'
+  }
+
+  function pairDataState(pair: string): 'ok' | 'pending' | 'unavailable' {
+    if (tickers.value[pair]) return 'ok'
+    if (!isLoaded.value) return 'pending'
+    if (source.value === 'binance') return 'unavailable'
+    return 'pending'
+  }
+
+  function pairDataLabel(pair: string) {
+    const state = pairDataState(pair)
+    if (state === 'ok') return null
+    if (state === 'pending') return 'Données en attente'
+    return 'Pair non couverte par la source actuelle'
   }
 
   // ─── Actions ──────────────────────────────────────────────────────────
@@ -121,7 +143,14 @@ export const useMarketStore = defineStore('market', () => {
   }
 
   function setStreamStatus(s: StreamStatus) {
+    const prevMode = transportMode.value
     streamStatus.value = s
+    const nextMode: 'ws' | 'rest' = s === 'live' ? 'ws' : 'rest'
+    transportMode.value = nextMode
+    if (prevMode !== nextMode) {
+      fallbackSwitchCount.value += 1
+      lastModeSwitchAt.value = Date.now()
+    }
   }
 
   return {
@@ -131,6 +160,9 @@ export const useMarketStore = defineStore('market', () => {
     streamStatus,
     source,
     updatedAt,
+    transportMode,
+    fallbackSwitchCount,
+    lastModeSwitchAt,
     // getters
     assetByPair,
     categoryByKey,
@@ -141,7 +173,10 @@ export const useMarketStore = defineStore('market', () => {
     isLoaded,
     pairs,
     dataAgeSec,
+    latencyMs,
     freshness,
+    pairDataState,
+    pairDataLabel,
     // actions
     hydrate,
     applyUpdates,

@@ -7,6 +7,10 @@ const store = useMarketStore()
 const now = useNow(1000)
 const marketAgeSec = computed(() => store.dataAgeSec(now.value))
 const marketFreshness = computed(() => store.freshness(now.value))
+const marketLatency = computed(() => store.latencyMs(now.value))
+const lastSwitchSec = computed(() =>
+  store.lastModeSwitchAt ? Math.max(0, Math.round((now.value - store.lastModeSwitchAt) / 1000)) : null,
+)
 
 // ─── Stats en tête ────────────────────────────────────────────────────────
 const stats = computed(() => {
@@ -64,6 +68,11 @@ const stats = computed(() => {
       </span>
       <span class="freshness" :data-freshness="marketFreshness">
         {{ marketAgeSec === null ? 'Données absentes' : `MAJ il y a ${marketAgeSec}s` }}
+      </span>
+      <span class="meta">
+        {{ store.transportMode.toUpperCase() }} ·
+        {{ marketLatency === null ? 'latence —' : `${marketLatency}ms` }} ·
+        switch {{ store.fallbackSwitchCount }}{{ lastSwitchSec === null ? '' : ` (il y a ${lastSwitchSec}s)` }}
       </span>
     </header>
 
@@ -169,6 +178,12 @@ const stats = computed(() => {
   &[data-freshness='fresh'] { color: $color-accent; }
   &[data-freshness='delayed'] { color: $color-warning; }
   &[data-freshness='stale'] { color: $color-danger; }
+}
+
+.meta {
+  font-size: $fs-xs;
+  color: $color-text-dim;
+  font-family: $font-mono;
 }
 
 .chip {

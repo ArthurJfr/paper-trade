@@ -23,6 +23,7 @@ const category = computed(() =>
 const ticker = computed(() => store.tickers[pair] ?? null)
 const marketAgeSec = computed(() => store.dataAgeSec(now.value))
 const marketFreshness = computed(() => store.freshness(now.value))
+const marketLatency = computed(() => store.latencyMs(now.value))
 const orderBookSourceMode = computed<'ws' | 'rest'>(() =>
   store.streamStatus === 'live' ? 'ws' : 'rest',
 )
@@ -101,6 +102,7 @@ const fmtInt = (n: number) => n.toLocaleString('fr-FR')
 // ─── SEO ───────────────────────────────────────────────────────────────────
 const pageTitle = computed(() => `${asset.value?.symbol ?? pair} · Paper-Trade`)
 useHead({ title: pageTitle })
+const pairDataLabel = computed(() => store.pairDataLabel(pair))
 
 function selectInterval(i: KlineInterval) { interval.value = i }
 function applyShortcut(i: KlineInterval) { interval.value = i }
@@ -144,9 +146,9 @@ async function resetView() {
             <span v-if="ticker" class="perf" :data-trend="trendOf(ticker.changePct)">
               {{ fmtPerf(ticker.changePct) }} sur 24 h
             </span>
-            <span v-else class="dim">—</span>
+            <span v-else class="dim">{{ pairDataLabel ?? 'Données en attente' }}</span>
             <span class="freshness" :data-freshness="marketFreshness">
-              {{ marketAgeSec === null ? 'offline' : `tick ${marketAgeSec}s` }}
+              {{ marketAgeSec === null ? 'offline' : `${store.transportMode.toUpperCase()} · ${marketAgeSec}s · ${marketLatency ?? 0}ms` }}
             </span>
           </div>
         </div>
@@ -219,19 +221,19 @@ async function resetView() {
       <div class="stats">
         <article class="stat">
           <span class="label">Ouverture 24 h</span>
-          <strong class="value">{{ ticker ? '$' + fmtPrice(ticker.open24h) : '—' }}</strong>
+          <strong class="value">{{ ticker ? '$' + fmtPrice(ticker.open24h) : (pairDataLabel ?? 'Données en attente') }}</strong>
         </article>
         <article class="stat">
           <span class="label">Plus haut 24 h</span>
-          <strong class="value">{{ ticker ? '$' + fmtPrice(ticker.high24h) : '—' }}</strong>
+          <strong class="value">{{ ticker ? '$' + fmtPrice(ticker.high24h) : (pairDataLabel ?? 'Données en attente') }}</strong>
         </article>
         <article class="stat">
           <span class="label">Plus bas 24 h</span>
-          <strong class="value">{{ ticker ? '$' + fmtPrice(ticker.low24h) : '—' }}</strong>
+          <strong class="value">{{ ticker ? '$' + fmtPrice(ticker.low24h) : (pairDataLabel ?? 'Données en attente') }}</strong>
         </article>
         <article class="stat">
           <span class="label">Volume 24 h</span>
-          <strong class="value">{{ ticker ? fmtVolume(ticker.volume24h) : '—' }}</strong>
+          <strong class="value">{{ ticker ? fmtVolume(ticker.volume24h) : (pairDataLabel ?? 'Données en attente') }}</strong>
           <span class="sub">USDT échangé</span>
         </article>
         <article class="stat">

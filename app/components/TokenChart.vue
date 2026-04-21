@@ -74,7 +74,11 @@ const direction = computed<Dir>(() => {
 })
 
 const lineColor = computed(() =>
-  direction.value === 'up' ? '#16c784' : direction.value === 'down' ? '#ea3943' : '#9aa0a6',
+  direction.value === 'up'
+    ? 'var(--chart-line-up)'
+    : direction.value === 'down'
+      ? 'var(--chart-line-down)'
+      : 'var(--chart-line-flat)',
 )
 
 // ─── Paths ────────────────────────────────────────────────────────────────
@@ -238,7 +242,7 @@ const tooltipStyle = computed(() => {
           :y="H - PAD_B - scales.volYAt(k.quoteVolume)"
           :width="Math.max(1, scales.xStep * 0.7)"
           :height="scales.volYAt(k.quoteVolume)"
-          :fill="k.close >= k.open ? '#16c784' : '#ea3943'"
+          :fill="k.close >= k.open ? 'var(--chart-line-up)' : 'var(--chart-line-down)'"
           fill-opacity="0.28"
         />
       </g>

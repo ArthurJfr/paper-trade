@@ -4,6 +4,7 @@ import type { Kline, KlineInterval } from '~~/shared/types/market'
 const props = defineProps<{
   klines: Kline[]
   interval: KlineInterval
+  mode?: 'line' | 'candles'
 }>()
 
 // ─── Canevas interne SVG (viewBox fixe, preserveAspectRatio: none) ────────
@@ -81,6 +82,8 @@ const lineColor = computed(() =>
       : 'var(--chart-line-flat)',
 )
 
+const chartMode = computed<'line' | 'candles'>(() => props.mode ?? 'candles')
+
 // ─── Paths ────────────────────────────────────────────────────────────────
 const linePath = computed(() => {
   const s = scales.value
@@ -100,6 +103,23 @@ const areaPath = computed(() => {
   const mid = ks.map((k, i) => `L${s.xAt(i).toFixed(2)},${s.yAt(k.close).toFixed(2)}`).join(' ')
   const last = `L${s.xAt(ks.length - 1).toFixed(2)},${CHART_BOTTOM} Z`
   return `${first} ${mid} ${last}`
+})
+
+const candles = computed(() => {
+  const s = scales.value
+  if (!s) return []
+  const bodyW = Math.max(2, Math.min(14, s.xStep * 0.62))
+  return props.klines.map((k, i) => {
+    const x = s.xAt(i)
+    const yOpen = s.yAt(k.open)
+    const yClose = s.yAt(k.close)
+    const yHigh = s.yAt(k.high)
+    const yLow = s.yAt(k.low)
+    const top = Math.min(yOpen, yClose)
+    const bodyH = Math.max(1, Math.abs(yClose - yOpen))
+    const trend: 'up' | 'down' = k.close >= k.open ? 'up' : 'down'
+    return { x, yOpen, yClose, yHigh, yLow, top, bodyH, bodyW, trend }
+  })
 })
 
 // ─── Axes ─────────────────────────────────────────────────────────────────
@@ -229,9 +249,35 @@ const tooltipStyle = computed(() => {
         >{{ t.label }}</text>
       </g>
 
-      <!-- Area + line -->
-      <path :d="areaPath" fill="url(#chart-area)" />
-      <path :d="linePath" fill="none" :stroke="lineColor" stroke-width="1.6" />
+      <!-- Courbe -->
+      <g v-if="chartMode === 'line'">
+        <path :d="areaPath" fill="url(#chart-area)" />
+        <path :d="linePath" fill="none" :stroke="lineColor" stroke-width="1.6" />
+      </g>
+
+      <!-- Chandeliers -->
+      <g v-else class="candles">
+        <line
+          v-for="(c, i) in candles"
+          :key="`wick-${i}`"
+          :x1="c.x"
+          :x2="c.x"
+          :y1="c.yHigh"
+          :y2="c.yLow"
+          :data-trend="c.trend"
+          class="wick"
+        />
+        <rect
+          v-for="(c, i) in candles"
+          :key="`body-${i}`"
+          :x="c.x - c.bodyW / 2"
+          :y="c.top"
+          :width="c.bodyW"
+          :height="c.bodyH"
+          :data-trend="c.trend"
+          class="body"
+        />
+      </g>
 
       <!-- Volume bars -->
       <g v-if="scales" class="volume">
@@ -310,6 +356,26 @@ svg {
   stroke-width: 0.5;
   stroke-dasharray: 3 3;
   opacity: 0.7;
+}
+
+.candles {
+  .wick {
+    stroke-width: 1;
+    &[data-trend='up'] { stroke: $color-accent; }
+    &[data-trend='down'] { stroke: $color-danger; }
+  }
+
+  .body {
+    stroke-width: 0.6;
+    &[data-trend='up'] {
+      fill: color-mix(in oklab, $color-accent 22%, transparent);
+      stroke: $color-accent;
+    }
+    &[data-trend='down'] {
+      fill: color-mix(in oklab, $color-danger 22%, transparent);
+      stroke: $color-danger;
+    }
+  }
 }
 
 .tooltip {

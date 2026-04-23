@@ -153,10 +153,7 @@ npm install
 # 3. Copier la config
 cp .env.example .env
 
-# 4. Initialiser la base SQLite
-npm run db:migrate
-
-# 5. Lancer en dev
+# 4. Lancer en dev
 npm run dev
 ```
 
@@ -164,7 +161,7 @@ npm run dev
 
 ### 🐳 Avec Docker (mode self-hosted)
 
-Le projet est prêt à être conteneurisé. Un `Dockerfile` multi-stage compile l'app Nuxt en mode `node-server`, et le `docker-compose.yml` orchestre tout ça avec un volume persistant pour la base SQLite.
+Le projet est prêt à être conteneurisé. Un `Dockerfile` multi-stage compile l'app Nuxt en mode `node-server`, et le `docker-compose.yml` orchestre tout ça avec un volume persistant pour les données locales.
 
 ```bash
 # Build + run en arrière-plan
@@ -182,7 +179,7 @@ docker compose down
 **Ce que fait Docker Compose :**
 
 - 🔨 Build multi-stage (deps → build → runtime minimal basé sur `node:20-alpine`)
-- 💾 Volume `./data` monté pour persister la base SQLite entre les redémarrages
+- 💾 Volume Docker persistant pour les données locales
 - 🌱 Charge automatiquement ton `.env`
 - 🩺 Healthcheck HTTP sur `/` toutes les 30s
 - 🔁 `restart: unless-stopped` pour qu'il redémarre avec la machine
@@ -196,9 +193,6 @@ Le fichier `.env` :
 ```env
 # Port d'écoute
 PORT=3000
-
-# Base de données
-DATABASE_URL=file:./data/paper-trade.db
 
 # CoinGecko (optionnel — une clé démo augmente le rate-limit)
 COINGECKO_API_KEY=
@@ -218,9 +212,6 @@ TRADING_FEE_BPS=10        # 0.10% de frais simulés
 | `npm run build` | Build de production |
 | `npm run preview` | Preview du build |
 | `npm run generate` | Génère le site statique |
-| `npm run db:generate` | Génère le client Prisma |
-| `npm run db:migrate` | Applique les migrations Prisma |
-| `npm run db:studio` | Ouvre Prisma Studio (GUI de la DB) |
 | `npm run typecheck` | Vérif TypeScript |
 
 ---

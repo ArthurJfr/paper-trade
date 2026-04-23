@@ -34,6 +34,8 @@ export default defineNuxtConfig({
   },
 
   runtimeConfig: {
+    backendApiUrl: process.env.BACKEND_API_URL || 'http://localhost:4000',
+    backendApiBasePath: process.env.BACKEND_API_BASE_PATH || '/api/v1',
     coingeckoApiKey: process.env.COINGECKO_API_KEY || '',
     public: {
       initialBalanceUsdc: Number(process.env.INITIAL_BALANCE_USDC ?? 10000),

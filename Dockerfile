@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Paper-Trade · Dockerfile multi-stage (Nuxt 3 + Nitro node-server + Prisma)
+# Paper-Trade · Dockerfile multi-stage (Nuxt 3 + Nitro node-server)
 # ──────────────────────────────────────────────────────────────────────────────
 
 ARG NODE_VERSION=20-alpine
@@ -10,7 +10,7 @@ ARG NODE_VERSION=20-alpine
 FROM node:${NODE_VERSION} AS deps
 WORKDIR /app
 
-RUN apk add --no-cache libc6-compat openssl \
+RUN apk add --no-cache libc6-compat \
  && corepack enable
 
 COPY package.json package-lock.json* .npmrc* ./
@@ -22,7 +22,7 @@ RUN --mount=type=cache,id=npm,target=/root/.npm \
 FROM node:${NODE_VERSION} AS build
 WORKDIR /app
 
-RUN apk add --no-cache openssl \
+RUN apk add --no-cache \
  && corepack enable
 
 COPY --from=deps /app/node_modules ./node_modules
@@ -31,9 +31,7 @@ COPY . .
 ENV NODE_ENV=production
 ENV NITRO_PRESET=node-server
 
-# Génère le client Prisma (binaires natifs) avant le build Nuxt.
-RUN npm run db:generate \
- && npm run build
+RUN npm run build
 
 # ─── Stage 3 · runtime ───────────────────────────────────────────────────────
 FROM node:${NODE_VERSION} AS runtime
@@ -45,18 +43,12 @@ ENV NODE_ENV=production \
     NITRO_PORT=3000 \
     NITRO_HOST=0.0.0.0
 
-RUN apk add --no-cache tini curl openssl \
+RUN apk add --no-cache tini curl \
  && addgroup -S nuxt && adduser -S nuxt -G nuxt \
  && mkdir -p /app/data && chown -R nuxt:nuxt /app
 
 # Sortie Nitro auto-suffisante (inclut les dépendances runtime bundlées).
 COPY --from=build --chown=nuxt:nuxt /app/.output ./.output
-
-# Prisma : schéma + migrations + client généré + CLI (pour migrate deploy au boot).
-COPY --from=build --chown=nuxt:nuxt /app/prisma ./prisma
-COPY --from=build --chown=nuxt:nuxt /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=build --chown=nuxt:nuxt /app/node_modules/@prisma ./node_modules/@prisma
-COPY --from=build --chown=nuxt:nuxt /app/node_modules/prisma ./node_modules/prisma
 
 COPY --chown=nuxt:nuxt docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh \

@@ -42,6 +42,12 @@ const INTERVAL_SHORTCUTS: { id: string, label: string, key: KlineInterval }[] = 
   { id: 'intraday', label: 'Intraday', key: '15m' },
   { id: 'swing', label: 'Swing', key: '4h' },
 ]
+const CHART_MODES = [
+  { key: 'candles', label: 'Bougies' },
+  { key: 'line', label: 'Ligne' },
+] as const
+type ChartMode = typeof CHART_MODES[number]['key']
+const chartMode = ref<ChartMode>('candles')
 
 const initialInterval = (route.query.i as KlineInterval) || '1h'
 const interval = ref<KlineInterval>(
@@ -173,6 +179,19 @@ async function resetView() {
               </button>
               <button class="shortcut reset" @click="resetView">Reset vue</button>
             </div>
+            <div class="chart-modes" role="tablist" aria-label="Type de graphique">
+              <button
+                v-for="m in CHART_MODES"
+                :key="m.key"
+                class="mode"
+                :class="{ active: chartMode === m.key }"
+                role="tab"
+                :aria-selected="chartMode === m.key"
+                @click="chartMode = m.key"
+              >
+                {{ m.label }}
+              </button>
+            </div>
             <div class="intervals" role="tablist" aria-label="Intervalle">
               <button
                 v-for="i in INTERVALS"
@@ -196,7 +215,7 @@ async function resetView() {
           <p>Chargement…</p>
         </div>
         <div v-else-if="klines && klines.length" class="chart-wrap">
-          <TokenChart :klines="klines" :interval="interval" />
+          <TokenChart :klines="klines" :interval="interval" :mode="chartMode" />
         </div>
         <div v-else class="state-box">
           <Icon name="ph:cloud-slash-bold" size="22" />
@@ -408,6 +427,34 @@ async function resetView() {
   border-radius: $radius-md;
 
   .interval {
+    padding: $space-xs $space-md;
+    background: transparent;
+    border: 0;
+    border-radius: $radius-sm;
+    color: $color-text-muted;
+    font-size: $fs-xs;
+    font-weight: $fw-medium;
+    font-family: $font-mono;
+    cursor: pointer;
+    transition: background $transition-fast, color $transition-fast;
+
+    &:hover { color: $color-text; }
+    &.active {
+      background: $color-surface;
+      color: $color-text;
+      box-shadow: $shadow-sm;
+    }
+  }
+}
+
+.chart-modes {
+  @include row(2px);
+  width: fit-content;
+  padding: 3px;
+  background: $color-surface-2;
+  border-radius: $radius-md;
+
+  .mode {
     padding: $space-xs $space-md;
     background: transparent;
     border: 0;

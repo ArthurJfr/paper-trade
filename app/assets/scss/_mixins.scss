@@ -105,6 +105,147 @@
   scrollbar-color: $color-border transparent;
 }
 
+// ─── Surfaces panneaux (sémantique) ────────────────────────────────────────
+@mixin panel {
+  background: var(--surface-panel);
+  border: 1px solid $color-border;
+  border-radius: $radius-lg;
+}
+
+@mixin panel-padded($pad: $space-lg) {
+  @include panel;
+  padding: $pad;
+}
+
+// ─── Chip / Tag ────────────────────────────────────────────────────────────
+@mixin chip-base {
+  @include row($space-xs);
+  padding: 2px $space-sm;
+  border-radius: $radius-full;
+  border: 1px solid $color-border;
+  font-size: $fs-xs;
+  font-weight: $fw-medium;
+  color: $color-text-muted;
+  background: $color-surface;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+// ─── Bouton générique (hook tailles) ───────────────────────────────────────
+@mixin btn-base {
+  @include row($space-xs);
+  justify-content: center;
+  border-radius: $radius-md;
+  font-weight: $fw-medium;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: background $transition-fast, color $transition-fast, border-color $transition-fast, opacity $transition-fast;
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+}
+
+// ─── État focus visible cohérent ───────────────────────────────────────────
+@mixin ring-inset {
+  outline: 2px solid $color-accent;
+  outline-offset: -2px;
+}
+
+@mixin ring-outset {
+  outline: 2px solid $color-accent;
+  outline-offset: 2px;
+}
+
+// ─── Tableaux (densité + a11y) ─────────────────────────────────────────────
+@mixin table-reset {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: $fs-sm;
+}
+
+// ─── Motion · Keyframes globaux ────────────────────────────────────────────
+// Préfixés `pt-` pour éviter toute collision CSS.
+@keyframes pt-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes pt-slide-up {
+  from { opacity: 0; transform: translate3d(0, 10px, 0); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes pt-scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pt-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
+@keyframes pt-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes pt-flash-up {
+  0%   { background-color: transparent; }
+  20%  { background-color: $color-accent-soft; }
+  100% { background-color: transparent; }
+}
+
+@keyframes pt-flash-down {
+  0%   { background-color: transparent; }
+  20%  { background-color: $color-danger-soft; }
+  100% { background-color: transparent; }
+}
+
+@keyframes pt-spin {
+  to { transform: rotate(360deg); }
+}
+
+// ─── Motion · Mixins d'animation ───────────────────────────────────────────
+@mixin anim-fade-in($duration: $duration-base, $easing: $ease-decelerate, $delay: 0ms) {
+  animation: pt-fade-in $duration $easing $delay both;
+}
+
+@mixin anim-slide-up($duration: $duration-base, $easing: $ease-decelerate, $delay: 0ms) {
+  animation: pt-slide-up $duration $easing $delay both;
+}
+
+@mixin anim-scale-in($duration: $duration-base, $easing: $ease-spring, $delay: 0ms) {
+  animation: pt-scale-in $duration $easing $delay both;
+}
+
+@mixin anim-pulse($duration: 1.4s, $easing: ease-in-out) {
+  animation: pt-pulse $duration $easing infinite;
+}
+
+@mixin anim-shimmer($duration: 1.6s, $easing: ease-in-out) {
+  animation: pt-shimmer $duration $easing infinite;
+}
+
+@mixin anim-flash-up($duration: 600ms) {
+  animation: pt-flash-up $duration $ease-decelerate both;
+}
+
+@mixin anim-flash-down($duration: 600ms) {
+  animation: pt-flash-down $duration $ease-decelerate both;
+}
+
+// ─── Motion · Stagger helper ───────────────────────────────────────────────
+// À appliquer sur un conteneur dont les enfants doivent entrer en cascade.
+// Usage : `@include stagger-children(6, 60ms, $duration-instant)`.
+@mixin stagger-children($count: 12, $step: 60ms, $base-delay: 0ms) {
+  @for $i from 1 through $count {
+    > *:nth-child(#{$i}) {
+      animation-delay: $base-delay + ($step * ($i - 1));
+    }
+  }
+}
+
 // ─── Functions ─────────────────────────────────────────────────────────────
 @function category-color($name) {
   @return map.get($categories, $name);

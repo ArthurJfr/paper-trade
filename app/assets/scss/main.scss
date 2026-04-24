@@ -37,8 +37,43 @@
   --chart-line-up: #16c784;
   --chart-line-down: #ea3943;
   --chart-line-flat: #9aa0a6;
+  --chart-grid: rgba(255, 255, 255, 0.04);
+  --chart-axis: rgba(255, 255, 255, 0.08);
+  --chart-overlay-ma20: #4dabf7;
+  --chart-overlay-ma50: #a78bfa;
+  --chart-overlay-ema21: #f59e0b;
+  --chart-overlay-vwap: #e879f9;
+  --chart-bench: #9aa0a6;
   --orderbook-ask-fill: rgba(234, 57, 67, 0.13);
   --orderbook-bid-fill: rgba(22, 199, 132, 0.13);
+
+  // Surfaces sémantiques
+  --surface-canvas: var(--color-bg);
+  --surface-panel: var(--color-surface);
+  --surface-raised: var(--color-surface-2);
+  --surface-overlay: var(--color-surface-3);
+
+  // Text sémantiques
+  --text-primary: var(--color-text);
+  --text-secondary: var(--color-text-muted);
+  --text-tertiary: var(--color-text-dim);
+
+  // Densité (comfortable par défaut)
+  --density-row: 1;
+  --density-pad-y: 0.75rem;
+  --density-pad-x: 1rem;
+
+  // Hauteurs standards contrôles
+  --control-h-xs: 24px;
+  --control-h-sm: 32px;
+  --control-h-md: 38px;
+  --control-h-lg: 44px;
+}
+
+:root[data-density='compact'] {
+  --density-row: 0.75;
+  --density-pad-y: 0.45rem;
+  --density-pad-x: 0.75rem;
 }
 
 :root[data-theme='light'] {
@@ -75,6 +110,22 @@
   --chart-line-flat: #6b7280;
   --orderbook-ask-fill: rgba(220, 38, 38, 0.16);
   --orderbook-bid-fill: rgba(14, 168, 111, 0.16);
+  --chart-grid: rgba(17, 24, 39, 0.06);
+  --chart-axis: rgba(17, 24, 39, 0.12);
+  --chart-overlay-ma20: #1d4ed8;
+  --chart-overlay-ma50: #7c3aed;
+  --chart-overlay-ema21: #b45309;
+  --chart-overlay-vwap: #be185d;
+  --chart-bench: #6b7280;
+
+  --surface-canvas: var(--color-bg);
+  --surface-panel: var(--color-surface);
+  --surface-raised: var(--color-surface-2);
+  --surface-overlay: var(--color-surface-3);
+
+  --text-primary: var(--color-text);
+  --text-secondary: var(--color-text-muted);
+  --text-tertiary: var(--color-text-dim);
 }
 
 html,
@@ -115,3 +166,142 @@ a,
 button {
   transition: color $transition-fast, background-color $transition-fast, border-color $transition-fast;
 }
+
+// ─── Densité (tables, listes, cards) ─────────────────────────────────────
+:root[data-density='compact'] {
+  table {
+    th, td {
+      padding-top: calc(var(--density-pad-y) * 0.75);
+      padding-bottom: calc(var(--density-pad-y) * 0.75);
+      padding-left: calc(var(--density-pad-x) * 0.9);
+      padding-right: calc(var(--density-pad-x) * 0.9);
+    }
+  }
+  .ui-card.padded { padding: 0.75rem 1rem; }
+  .ui-stat { padding: 0.65rem 0.9rem; }
+}
+
+// ─── Skip link (a11y) ─────────────────────────────────────────────────────
+.skip-link {
+  position: fixed;
+  top: $space-sm;
+  left: $space-sm;
+  z-index: $z-toast;
+  padding: $space-sm $space-md;
+  background: $color-accent;
+  color: $color-bg;
+  border-radius: $radius-sm;
+  font-weight: $fw-semibold;
+  transform: translateY(-200%);
+  transition: transform $transition-fast;
+
+  &:focus-visible {
+    transform: translateY(0);
+    outline: 2px solid $color-text;
+    outline-offset: 2px;
+  }
+}
+
+// ─── Transition de page Nuxt (pt-page) ────────────────────────────────────
+// Pilotée par `app.pageTransition` dans nuxt.config.ts.
+.pt-page-enter-active,
+.pt-page-leave-active {
+  transition: opacity $duration-base $ease-standard,
+              transform $duration-base $ease-standard;
+}
+
+.pt-page-enter-from {
+  opacity: 0;
+  transform: translate3d(0, 8px, 0);
+}
+
+.pt-page-leave-to {
+  opacity: 0;
+  transform: translate3d(0, -4px, 0);
+}
+
+// ─── Transition popover (pt-popover) ──────────────────────────────────────
+.pt-popover-enter-active,
+.pt-popover-leave-active {
+  transition: opacity $duration-fast $ease-decelerate,
+              transform $duration-fast $ease-decelerate;
+  transform-origin: top right;
+}
+
+.pt-popover-enter-from,
+.pt-popover-leave-to {
+  opacity: 0;
+  transform: translate3d(0, -4px, 0) scale(0.98);
+}
+
+// ─── Transition dialog (pt-dialog) ─────────────────────────────────────────
+.pt-dialog-enter-active {
+  transition: opacity $duration-base $ease-decelerate;
+
+  .dialog {
+    transition: opacity $duration-base $ease-emphasized,
+                transform $duration-base $ease-emphasized;
+  }
+}
+
+.pt-dialog-leave-active {
+  transition: opacity $duration-fast $ease-accelerate;
+
+  .dialog {
+    transition: opacity $duration-fast $ease-accelerate,
+                transform $duration-fast $ease-accelerate;
+  }
+}
+
+.pt-dialog-enter-from,
+.pt-dialog-leave-to {
+  opacity: 0;
+
+  .dialog {
+    opacity: 0;
+    transform: translate3d(0, 16px, 0) scale(0.96);
+  }
+}
+
+// ─── Liste en stagger (pt-cards) ──────────────────────────────────────────
+.pt-cards-enter-active,
+.pt-cards-leave-active,
+.pt-cards-move {
+  transition: opacity $duration-base $ease-standard,
+              transform $duration-base $ease-standard;
+}
+
+.pt-cards-enter-from {
+  opacity: 0;
+  transform: translate3d(0, 10px, 0) scale(0.98);
+}
+
+.pt-cards-leave-to {
+  opacity: 0;
+  transform: translate3d(0, -4px, 0) scale(0.98);
+}
+
+.pt-cards-leave-active {
+  position: absolute;
+}
+
+// ─── Respect de prefers-reduced-motion ────────────────────────────────────
+// Applique le mode réduit soit via la media-query système, soit via l'opt-in
+// utilisateur (data-motion="reduced" contrôlé par le store uiPreferences).
+// Neutralise aussi `animation` (pas uniquement `animation-duration`) pour
+// éviter tout flash sur les keyframes à multiple étapes.
+@mixin reduced-motion-rules {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) { @include reduced-motion-rules; }
+:root[data-motion='reduced']            { @include reduced-motion-rules; }

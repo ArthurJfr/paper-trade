@@ -5,6 +5,7 @@ import { useMarketStore } from '~/stores/market'
 const route = useRoute()
 const router = useRouter()
 const store = useMarketStore()
+const ui = useUiPreferencesStore()
 const now = useNow(1000)
 
 // ─── Pair : normalisation + validation ─────────────────────────────────────
@@ -43,13 +44,24 @@ const INTERVAL_SHORTCUTS: { id: string, label: string, key: KlineInterval }[] = 
   { id: 'swing', label: 'Swing', key: '4h' },
 ]
 const CHART_MODES = [
-  { key: 'candles', label: 'Bougies' },
-  { key: 'line', label: 'Ligne' },
+  { key: 'candles', label: 'Bougies', icon: 'ph:chart-bar-bold' },
+  { key: 'line',    label: 'Ligne',   icon: 'ph:chart-line-bold' },
+  { key: 'area',    label: 'Aire',    icon: 'ph:chart-polygon-bold' },
 ] as const
 type ChartMode = typeof CHART_MODES[number]['key']
-const chartMode = ref<ChartMode>('candles')
 
-const initialInterval = (route.query.i as KlineInterval) || '1h'
+const chartMode = computed<ChartMode>({
+  get: () => ui.state.chart.type as ChartMode,
+  set: (v) => ui.setChart({ type: v }),
+})
+
+const chartOverlays = computed(() => ui.state.chart.overlays)
+const showVolume = computed({
+  get: () => ui.state.chart.showVolume,
+  set: (v) => ui.setChart({ showVolume: v }),
+})
+
+const initialInterval = (route.query.i as KlineInterval) || ui.state.chart.interval || '1h'
 const interval = ref<KlineInterval>(
   INTERVALS.some(x => x.key === initialInterval) ? initialInterval : '1h',
 )
@@ -62,7 +74,19 @@ watch(interval, (i) => {
   if (i === '1h') delete q.i
   else q.i = i
   router.replace({ query: q })
+  ui.setChart({ interval: i })
 })
+
+const OVERLAY_OPTIONS: { key: keyof typeof chartOverlays.value, label: string, color: string }[] = [
+  { key: 'ma20',  label: 'MA20',  color: 'var(--chart-overlay-ma20)' },
+  { key: 'ma50',  label: 'MA50',  color: 'var(--chart-overlay-ma50)' },
+  { key: 'ema21', label: 'EMA21', color: 'var(--chart-overlay-ema21)' },
+  { key: 'vwap',  label: 'VWAP',  color: 'var(--chart-overlay-vwap)' },
+]
+
+function toggleOverlay(key: keyof typeof chartOverlays.value) {
+  ui.toggleOverlay(key)
+}
 
 // ─── Klines (SSR-aware, ré-fetch à chaque changement d'intervalle) ─────────
 const { data: klines, pending: klinesPending, error: klinesError } = await useFetch<Kline[]>(
@@ -117,6 +141,11 @@ async function resetView() {
   await router.replace({ query: {} })
   if (process.client) window.scrollTo({ top: 0, behavior: 'smooth' })
 }
+
+const isWatched = computed(() => ui.isWatched(pair))
+function toggleWatch() {
+  ui.toggleWatch(pair)
+}
 </script>
 
 <template>
@@ -145,17 +174,32 @@ async function resetView() {
         </div>
 
         <div class="price-block">
-          <strong class="price" :data-trend="trendOf(ticker?.changePct ?? 0)">
-            {{ currentPrice !== null ? '$' + fmtPrice(currentPrice) : '—' }}
-          </strong>
+          <div class="price-head">
+            <UiIconButton
+              :icon="isWatched ? 'ph:star-fill' : 'ph:star-bold'"
+              variant="ghost"
+              :active="isWatched"
+              :ariaLabel="isWatched ? `Retirer ${asset?.symbol ?? pair} de la watchlist` : `Ajouter ${asset?.symbol ?? pair} à la watchlist`"
+              @click="toggleWatch"
+            />
+            <strong class="price" :data-trend="trendOf(ticker?.changePct ?? 0)">
+              {{ currentPrice !== null ? '$' + fmtPrice(currentPrice) : '—' }}
+            </strong>
+          </div>
           <div class="sub-row">
             <span v-if="ticker" class="perf" :data-trend="trendOf(ticker.changePct)">
               {{ fmtPerf(ticker.changePct) }} sur 24 h
             </span>
             <span v-else class="dim">{{ pairDataLabel ?? 'Données en attente' }}</span>
-            <span class="freshness" :data-freshness="marketFreshness">
-              {{ marketAgeSec === null ? 'offline' : `${store.transportMode.toUpperCase()} · ${marketAgeSec}s · ${marketLatency ?? 0}ms` }}
-            </span>
+            <FreshnessBadge
+              :freshness="marketFreshness"
+              :age-sec="marketAgeSec"
+            />
+            <MarketMeta
+              :transport-mode="store.transportMode"
+              :latency-ms="marketLatency"
+              :switch-count="store.fallbackSwitchCount"
+            />
           </div>
         </div>
       </div>
@@ -189,6 +233,7 @@ async function resetView() {
                 :aria-selected="chartMode === m.key"
                 @click="chartMode = m.key"
               >
+                <Icon :name="m.icon" size="12" aria-hidden="true" />
                 {{ m.label }}
               </button>
             </div>
@@ -204,6 +249,32 @@ async function resetView() {
               >{{ i.label }}</button>
             </div>
           </div>
+          <div class="chart-aux">
+            <div class="overlays-group" role="group" aria-label="Overlays">
+              <button
+                v-for="ov in OVERLAY_OPTIONS"
+                :key="ov.key"
+                type="button"
+                class="overlay-toggle"
+                :class="{ active: chartOverlays[ov.key] }"
+                :aria-pressed="chartOverlays[ov.key]"
+                @click="toggleOverlay(ov.key)"
+              >
+                <span class="ov-swatch" :style="{ background: ov.color }" aria-hidden="true" />
+                {{ ov.label }}
+              </button>
+            </div>
+            <button
+              type="button"
+              class="vol-toggle"
+              :class="{ active: showVolume }"
+              :aria-pressed="showVolume"
+              @click="showVolume = !showVolume"
+            >
+              <Icon name="ph:chart-bar-bold" size="12" />
+              Volume
+            </button>
+          </div>
         </div>
 
         <div v-if="klinesError" class="state-box error">
@@ -215,12 +286,66 @@ async function resetView() {
           <p>Chargement…</p>
         </div>
         <div v-else-if="klines && klines.length" class="chart-wrap">
-          <TokenChart :klines="klines" :interval="interval" :mode="chartMode" />
+          <TokenChart
+            :klines="klines"
+            :interval="interval"
+            :mode="chartMode"
+            :overlays="chartOverlays"
+            :show-volume="showVolume"
+          />
+          <p class="chart-hint">
+            <kbd>Drag</kbd> pan · <kbd>Scroll</kbd> zoom · <kbd>0</kbd> reset · <kbd>+/−</kbd> zoom · <kbd>←/→</kbd> pan
+          </p>
         </div>
         <div v-else class="state-box">
           <Icon name="ph:cloud-slash-bold" size="22" />
           <p>Aucune donnée pour {{ pair }}.</p>
         </div>
+        <!-- ─── Stats ─────────────────────────────────────────────────────── -->
+        <section class="stats-block">
+          <h2 class="block-title">Statistiques 24 h</h2>
+          <div class="stats">
+            <article class="stat">
+              <span class="label">Ouverture 24 h</span>
+              <strong class="value">{{ ticker ? '$' + fmtPrice(ticker.open24h) : (pairDataLabel ?? 'Données en attente') }}</strong>
+            </article>
+            <article class="stat">
+              <span class="label">Plus haut 24 h</span>
+              <strong class="value">{{ ticker ? '$' + fmtPrice(ticker.high24h) : (pairDataLabel ?? 'Données en attente') }}</strong>
+            </article>
+            <article class="stat">
+              <span class="label">Plus bas 24 h</span>
+              <strong class="value">{{ ticker ? '$' + fmtPrice(ticker.low24h) : (pairDataLabel ?? 'Données en attente') }}</strong>
+            </article>
+            <article class="stat">
+              <span class="label">Volume 24 h</span>
+              <strong class="value">{{ ticker ? fmtVolume(ticker.volume24h) : (pairDataLabel ?? 'Données en attente') }}</strong>
+              <span class="sub">USDT échangé</span>
+            </article>
+            <article class="stat">
+              <span class="label">Best bid</span>
+              <strong class="value up">{{ spread ? '$' + fmtPrice(spread.bid) : '—' }}</strong>
+            </article>
+            <article class="stat">
+              <span class="label">Best ask</span>
+              <strong class="value down">{{ spread ? '$' + fmtPrice(spread.ask) : '—' }}</strong>
+            </article>
+            <article class="stat">
+              <span class="label">Spread</span>
+              <strong class="value">{{ spread ? spread.pct.toFixed(3) + ' %' : '—' }}</strong>
+              <span class="sub">bid-ask relatif</span>
+            </article>
+            <article class="stat">
+              <span class="label">Trades</span>
+              <strong class="value">
+                {{ klines && klines.length
+                  ? fmtInt(klines.reduce((s, k) => s + k.trades, 0))
+                  : '—' }}
+              </strong>
+              <span class="sub">sur la série affichée</span>
+            </article>
+          </div>
+        </section>
       </section>
 
       <aside class="side-col">
@@ -233,52 +358,6 @@ async function resetView() {
         <OrderBook :book="book" :status="obStatus" :depth="14" :source-mode="orderBookSourceMode" />
       </aside>
     </div>
-
-    <!-- ─── Stats ───────────────────────────────────────────────────────── -->
-    <section class="stats-block">
-      <h2 class="block-title">Statistiques 24 h</h2>
-      <div class="stats">
-        <article class="stat">
-          <span class="label">Ouverture 24 h</span>
-          <strong class="value">{{ ticker ? '$' + fmtPrice(ticker.open24h) : (pairDataLabel ?? 'Données en attente') }}</strong>
-        </article>
-        <article class="stat">
-          <span class="label">Plus haut 24 h</span>
-          <strong class="value">{{ ticker ? '$' + fmtPrice(ticker.high24h) : (pairDataLabel ?? 'Données en attente') }}</strong>
-        </article>
-        <article class="stat">
-          <span class="label">Plus bas 24 h</span>
-          <strong class="value">{{ ticker ? '$' + fmtPrice(ticker.low24h) : (pairDataLabel ?? 'Données en attente') }}</strong>
-        </article>
-        <article class="stat">
-          <span class="label">Volume 24 h</span>
-          <strong class="value">{{ ticker ? fmtVolume(ticker.volume24h) : (pairDataLabel ?? 'Données en attente') }}</strong>
-          <span class="sub">USDT échangé</span>
-        </article>
-        <article class="stat">
-          <span class="label">Best bid</span>
-          <strong class="value up">{{ spread ? '$' + fmtPrice(spread.bid) : '—' }}</strong>
-        </article>
-        <article class="stat">
-          <span class="label">Best ask</span>
-          <strong class="value down">{{ spread ? '$' + fmtPrice(spread.ask) : '—' }}</strong>
-        </article>
-        <article class="stat">
-          <span class="label">Spread</span>
-          <strong class="value">{{ spread ? spread.pct.toFixed(3) + ' %' : '—' }}</strong>
-          <span class="sub">bid-ask relatif</span>
-        </article>
-        <article class="stat">
-          <span class="label">Trades</span>
-          <strong class="value">
-            {{ klines && klines.length
-              ? fmtInt(klines.reduce((s, k) => s + k.trades, 0))
-              : '—' }}
-          </strong>
-          <span class="sub">sur la série affichée</span>
-        </article>
-      </div>
-    </section>
   </section>
 </template>
 
@@ -343,6 +422,11 @@ async function resetView() {
   text-align: right;
   @include stack($space-xs);
 
+  .price-head {
+    @include row($space-sm);
+    justify-content: flex-end;
+  }
+
   .price {
     font-size: $fs-3xl;
     @include mono-nums;
@@ -356,6 +440,7 @@ async function resetView() {
     @include mono-nums;
     @include row($space-sm);
     justify-content: flex-end;
+    flex-wrap: wrap;
 
     .perf {
       &[data-trend='up']   { color: $color-accent; }
@@ -364,24 +449,15 @@ async function resetView() {
   }
 }
 
-.freshness {
-  font-size: $fs-xs;
-  font-family: $font-mono;
-  color: $color-text-muted;
-  &[data-freshness='fresh'] { color: $color-accent; }
-  &[data-freshness='delayed'] { color: $color-warning; }
-  &[data-freshness='stale'] { color: $color-danger; }
-}
-
 // ─── Body ─────────────────────────────────────────────────────────────────
 .body {
   display: grid;
-  grid-template-columns: 1fr 340px;
+  grid-template-columns: minmax(0, 1fr) 340px;
   gap: $space-lg;
   align-items: start;
 
-  @include media-down(lg) {
-    grid-template-columns: 1fr;
+  @include media-down($bp-lg) {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -394,20 +470,24 @@ async function resetView() {
 .chart-head {
   @include flex-between;
   gap: $space-md;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .chart-controls {
   @include stack($space-sm);
   width: 100%;
+  min-width: 0;
 }
 
 .shortcuts {
   @include row($space-sm);
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .shortcut {
-  padding: 2px $space-sm;
+  padding: $space-2xs $space-sm;
   border: 1px solid $color-border;
   border-radius: $radius-full;
   background: $color-surface;
@@ -416,15 +496,20 @@ async function resetView() {
   cursor: pointer;
 
   &:hover { color: $color-text; border-color: $color-border-hover; }
+  &:focus-visible { @include ring-outset; }
   &.active { color: $color-accent; border-color: $color-accent; }
   &.reset { margin-left: auto; }
 }
 
 .intervals {
-  @include row(2px);
-  padding: 3px;
+  @include row($space-2xs);
+  padding: $space-xs;
   background: $color-surface-2;
   border-radius: $radius-md;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
 
   .interval {
     padding: $space-xs $space-md;
@@ -437,8 +522,10 @@ async function resetView() {
     font-family: $font-mono;
     cursor: pointer;
     transition: background $transition-fast, color $transition-fast;
+    flex-shrink: 0;
 
     &:hover { color: $color-text; }
+    &:focus-visible { @include ring-inset; }
     &.active {
       background: $color-surface;
       color: $color-text;
@@ -448,13 +535,18 @@ async function resetView() {
 }
 
 .chart-modes {
-  @include row(2px);
+  @include row($space-2xs);
   width: fit-content;
-  padding: 3px;
+  max-width: 100%;
+  padding: $space-xs;
   background: $color-surface-2;
   border-radius: $radius-md;
+  overflow-x: auto;
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
 
   .mode {
+    @include row($space-xs);
     padding: $space-xs $space-md;
     background: transparent;
     border: 0;
@@ -465,8 +557,10 @@ async function resetView() {
     font-family: $font-mono;
     cursor: pointer;
     transition: background $transition-fast, color $transition-fast;
+    flex-shrink: 0;
 
     &:hover { color: $color-text; }
+    &:focus-visible { @include ring-inset; }
     &.active {
       background: $color-surface;
       color: $color-text;
@@ -475,7 +569,82 @@ async function resetView() {
   }
 }
 
-.chart-wrap { position: relative; }
+.chart-wrap {
+  position: relative;
+  @include stack($space-xs);
+}
+
+.chart-hint {
+  font-size: $fs-2xs;
+  color: $color-text-dim;
+  font-family: $font-mono;
+  letter-spacing: 0.02em;
+  display: flex;
+  gap: $space-sm;
+  flex-wrap: wrap;
+
+  kbd {
+    font-family: $font-mono;
+    padding: $space-2xs $space-xs;
+    border: 1px solid $color-border;
+    border-radius: $radius-sm;
+    background: $color-surface-2;
+    color: $color-text-muted;
+    font-size: $fs-3xs;
+  }
+}
+
+.chart-aux {
+  @include flex-between;
+  flex-wrap: wrap;
+  gap: $space-sm;
+  padding-top: $space-xs;
+  border-top: 1px dashed $color-border;
+}
+
+.overlays-group {
+  @include row($space-xs);
+  flex-wrap: wrap;
+}
+
+.overlay-toggle {
+  @include row($space-xs);
+  padding: $space-xs $space-sm;
+  font-size: $fs-2xs;
+  font-weight: $fw-medium;
+  font-family: $font-mono;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-radius: $radius-sm;
+  color: $color-text-muted;
+  cursor: pointer;
+
+  .ov-swatch {
+    width: 10px;
+    height: 2px;
+    border-radius: $radius-xs;
+  }
+
+  &:hover { color: $color-text; border-color: $color-border-hover; }
+  &.active { color: $color-text; background: $color-surface-2; border-color: $color-border-hover; }
+  &:focus-visible { @include ring-inset; }
+}
+
+.vol-toggle {
+  @include row($space-xs);
+  padding: $space-xs $space-sm;
+  font-size: $fs-2xs;
+  font-family: $font-mono;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-radius: $radius-sm;
+  color: $color-text-muted;
+  cursor: pointer;
+
+  &:hover { color: $color-text; }
+  &:focus-visible { @include ring-inset; }
+  &.active { color: $color-accent; border-color: $color-accent; background: $color-accent-soft; }
+}
 
 .state-box {
   @include card;
@@ -517,6 +686,7 @@ async function resetView() {
 .stat {
   @include card;
   @include stack($space-xs);
+  min-width: 0;
 
   .label {
     font-size: $fs-xs;
@@ -527,6 +697,7 @@ async function resetView() {
   .value {
     font-size: $fs-xl;
     @include mono-nums;
+    @include truncate;
 
     &.up   { color: $color-accent; }
     &.down { color: $color-danger; }
@@ -534,6 +705,7 @@ async function resetView() {
   .sub {
     font-size: $fs-xs;
     color: $color-text-dim;
+    @include truncate;
   }
 }
 

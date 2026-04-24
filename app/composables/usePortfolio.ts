@@ -1,23 +1,37 @@
 import type {
   OrderRequest,
   OrderResult,
-  PortfolioSnapshot,
   TradeRecord,
 } from '~~/shared/types/portfolio'
+import type { WalletSnapshot } from '~/composables/useWallets'
 
 /**
- * Orchestrateur portefeuille :
- * - SSR-safe : hydrate le store Pinia dès le premier `useFetch` (synchronous).
- * - Expose `placeOrder` (POST /api/portfolio/orders) qui met à jour le store localement.
- * - Expose `refresh` pour resynchro forcée.
+ * Orchestrateur portefeuille (wallet actif).
+ * - Le layout appelle `useWallets()` AVANT `usePortfolio()` pour garantir
+ *   qu'un `activeWalletId` est défini dans le store wallets.
+ * - Expose `placeOrder` qui route vers `POST /api/wallets/:id/orders` et
+ *   met à jour le store portefeuille localement.
+ * - Expose `refresh` pour une resynchro forcée contre le backend.
  */
 export async function usePortfolio() {
   const store = usePortfolioStore()
+  const wallets = useWalletsStore()
 
-  const { data, error, refresh } = await useFetch<PortfolioSnapshot>('/api/portfolio', {
-    key: 'portfolio-snapshot',
+  // Lien réactif : si l'id actif change pendant le SSR, l'URL du fetch est
+  // recalculée via `computed`. En cas d'absence d'id (cas vraiment dégradé),
+  // on désactive le fetch pour éviter un 400.
+  const url = computed(() =>
+    wallets.activeId
+      ? `/api/wallets/${wallets.activeId}`
+      : null,
+  )
+
+  const { data, error, refresh } = await useFetch<WalletSnapshot | null>(url, {
+    key: 'wallet-snapshot',
     server: true,
-    default: () => null,
+    default: () => null as WalletSnapshot | null,
+    // Pas de fetch s'il n'y a pas encore d'id (évite un /api/wallets/null).
+    watch: [url],
   })
 
   if (data.value) store.hydrate(data.value)
@@ -29,19 +43,20 @@ export async function usePortfolio() {
   const placing = ref(false)
   const lastError = ref<string | null>(null)
 
-  /**
-   * Exécute un ordre market.
-   * Lance une exception serialisable en cas d'erreur métier (422) ou technique.
-   */
   async function placeOrder(req: OrderRequest): Promise<OrderResult> {
+    const id = wallets.activeId
+    if (!id) throw new Error('Aucun wallet actif')
     placing.value = true
     lastError.value = null
     try {
-      const res = await $fetch<OrderResult>('/api/portfolio/orders', {
+      const res = await $fetch<OrderResult>(`/api/wallets/${id}/orders`, {
         method: 'POST',
         body: req,
       })
       store.applyOrderResult(res)
+      // Rafraîchit les stats du wallet actif (equity, perf, trade count…).
+      // On fait un refresh léger sans bloquer, en best-effort.
+      wallets.fetchAll().catch(() => { /* noop : l'UI affiche la dernière version */ })
       return res
     } catch (err: unknown) {
       const msg = extractErrorMessage(err)
@@ -62,7 +77,6 @@ export async function usePortfolio() {
   }
 }
 
-/** Compose un message lisible depuis une erreur $fetch / H3. */
 function extractErrorMessage(err: unknown): string {
   if (err && typeof err === 'object') {
     const e = err as { statusMessage?: string; data?: { statusMessage?: string; message?: string }; message?: string }
@@ -79,9 +93,19 @@ function extractErrorMessage(err: unknown): string {
 
 // ─── Helpers exposés pour l'UI (lecture seule) ────────────────────────────
 
-/** Récupère l'historique des trades, lecture seule (pas stockée dans le store). */
-export async function fetchTrades(options?: { pair?: string; limit?: number }): Promise<TradeRecord[]> {
-  return await $fetch<TradeRecord[]>('/api/portfolio/trades', {
+/**
+ * Récupère l'historique des trades du wallet actif (ou d'un wallet explicite).
+ * Lecture seule : pas stockée dans le store.
+ */
+export async function fetchTrades(options?: {
+  pair?: string
+  limit?: number
+  walletId?: number
+}): Promise<TradeRecord[]> {
+  const wallets = useWalletsStore()
+  const id = options?.walletId ?? wallets.activeId
+  if (!id) return []
+  return await $fetch<TradeRecord[]>(`/api/wallets/${id}/trades`, {
     query: {
       ...(options?.pair  ? { pair:  options.pair  } : {}),
       ...(options?.limit ? { limit: options.limit } : {}),

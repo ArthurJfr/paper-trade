@@ -22,11 +22,29 @@ const runtime = useRuntimeConfig()
 const feeBps = runtime.public.tradingFeeBps
 
 const { store, placing, placeOrder } = await usePortfolio()
+const wallets = useWalletsStore()
+const toasts = useToasts()
+const ui = useUiPreferencesStore()
+
+const hasActiveWallet = computed(() => wallets.activeId !== null)
 
 const side = ref<OrderSide>('buy')
 const amount = ref<string>('') // saisie USDC (string pour autoriser ",")
 const feedback = ref<{ type: 'ok' | 'err'; text: string } | null>(null)
 const feedbackTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+
+// ─── Plan SL/TP (simulation frontend uniquement, persistée via uiPreferences) ─
+const planOpen = ref(false)
+const stopLossPct = ref<number | null>(null)
+const takeProfitPct = ref<number | null>(null)
+
+function loadPlanFor(pair: string) {
+  const p = ui.getTradePlan(pair)
+  stopLossPct.value = p?.stopLossPct ?? null
+  takeProfitPct.value = p?.takeProfitPct ?? null
+}
+loadPlanFor(props.pair)
+watch(() => props.pair, loadPlanFor)
 
 // ─── Dérivés ──────────────────────────────────────────────────────────────
 
@@ -38,6 +56,48 @@ const parsedAmount = computed(() => {
   const n = Number.parseFloat(amount.value.replace(',', '.'))
   return Number.isFinite(n) && n > 0 ? n : 0
 })
+
+const stopLossPrice = computed(() => {
+  if (stopLossPct.value === null || !props.price) return null
+  return props.price * (1 - stopLossPct.value / 100)
+})
+const takeProfitPrice = computed(() => {
+  if (takeProfitPct.value === null || !props.price) return null
+  return props.price * (1 + takeProfitPct.value / 100)
+})
+const riskReward = computed(() => {
+  if (stopLossPct.value === null || takeProfitPct.value === null) return null
+  if (stopLossPct.value <= 0) return null
+  return takeProfitPct.value / stopLossPct.value
+})
+const riskAmount = computed(() => {
+  if (stopLossPct.value === null) return null
+  return parsedAmount.value * (stopLossPct.value / 100)
+})
+const rewardAmount = computed(() => {
+  if (takeProfitPct.value === null) return null
+  return parsedAmount.value * (takeProfitPct.value / 100)
+})
+
+function savePlan() {
+  if (stopLossPct.value === null && takeProfitPct.value === null) {
+    ui.removeTradePlan(props.pair)
+    toasts.info('Plan SL/TP supprimé', { title: props.pair })
+    return
+  }
+  ui.setTradePlan(props.pair, {
+    stopLossPct: stopLossPct.value,
+    takeProfitPct: takeProfitPct.value,
+    entryPrice: props.price,
+  })
+  toasts.success('Plan enregistré', { title: props.symbol ?? props.pair })
+}
+
+function clearPlan() {
+  stopLossPct.value = null
+  takeProfitPct.value = null
+  ui.removeTradePlan(props.pair)
+}
 
 /** Plafond USDC utilisable pour l'ordre courant (inclut les frais pour un buy). */
 const maxNotional = computed(() => {
@@ -59,6 +119,7 @@ const totalCost = computed(() =>
 
 const canSubmit = computed(() => {
   if (placing.value) return false
+  if (!hasActiveWallet.value) return false
   if (!props.price || props.price <= 0) return false
   if (parsedAmount.value <= 0) return false
   if (side.value === 'buy' && totalCost.value > cashAvailable.value + 1e-9) return false
@@ -67,6 +128,7 @@ const canSubmit = computed(() => {
 })
 
 const submitLabel = computed(() => {
+  if (!hasActiveWallet.value) return 'Aucun wallet actif'
   if (!props.price || props.price <= 0) return 'Prix indisponible'
   if (parsedAmount.value <= 0) return 'Entrer un montant'
   if (side.value === 'buy' && totalCost.value > cashAvailable.value + 1e-9) {
@@ -104,10 +166,13 @@ async function submit() {
   try {
     const res = await placeOrder({ pair: props.pair, side: side.value, notional })
     const label = side.value === 'buy' ? 'Achat' : 'Vente'
-    flashFeedback(
-      'ok',
-      `${label} exécuté : ${fmtQty(res.trade.quantity)} ${props.symbol ?? props.pair} à $${fmtPrice(res.trade.price)}`,
-    )
+    const summary = `${fmtQty(res.trade.quantity)} ${props.symbol ?? props.pair} à $${fmtPrice(res.trade.price)}`
+    flashFeedback('ok', `${label} exécuté : ${summary}`)
+    toasts.success(summary, {
+      title: `${label} ${props.symbol ?? props.pair}`,
+      actionLabel: 'Voir wallets',
+      action: () => navigateTo('/wallets'),
+    })
     emit('filled', {
       side: side.value,
       notional,
@@ -116,7 +181,9 @@ async function submit() {
     })
     resetAmount()
   } catch (err) {
-    flashFeedback('err', (err as Error).message)
+    const msg = (err as Error).message
+    flashFeedback('err', msg)
+    toasts.danger(msg, { title: 'Ordre refusé' })
   }
 }
 
@@ -136,23 +203,23 @@ onBeforeUnmount(() => {
   <section class="ticket">
     <header class="ticket-head">
       <h3>Ordre market</h3>
-      <div class="side-tabs" role="tablist">
+      <div class="side-tabs" role="radiogroup" aria-label="Sens de l'ordre">
         <button
           type="button"
-          role="tab"
-          class="tab"
-          :class="{ active: side === 'buy', buy: true }"
-          :aria-selected="side === 'buy'"
+          role="radio"
+          class="tab buy"
+          :class="{ active: side === 'buy' }"
+          :aria-checked="side === 'buy'"
           @click="side = 'buy'"
         >
           Acheter
         </button>
         <button
           type="button"
-          role="tab"
-          class="tab"
-          :class="{ active: side === 'sell', sell: true }"
-          :aria-selected="side === 'sell'"
+          role="radio"
+          class="tab sell"
+          :class="{ active: side === 'sell' }"
+          :aria-checked="side === 'sell'"
           @click="side = 'sell'"
         >
           Vendre
@@ -189,8 +256,14 @@ onBeforeUnmount(() => {
         </div>
       </label>
 
-      <div class="pct">
-        <button v-for="p in [0.25, 0.5, 0.75, 1]" :key="p" type="button" @click="setPercent(p)">
+      <div class="pct" role="group" aria-label="Utiliser un pourcentage du solde">
+        <button
+          v-for="p in [0.25, 0.5, 0.75, 1]"
+          :key="p"
+          type="button"
+          :aria-label="`Utiliser ${Math.round(p * 100)} % ${side === 'buy' ? 'du cash' : 'de la position'}`"
+          @click="setPercent(p)"
+        >
           {{ Math.round(p * 100) }}%
         </button>
       </div>
@@ -213,6 +286,67 @@ onBeforeUnmount(() => {
           <dd>${{ totalCost > 0 ? totalCost.toFixed(2) : '0.00' }}</dd>
         </div>
       </dl>
+
+      <button
+        type="button"
+        class="plan-toggle"
+        :aria-expanded="planOpen"
+        @click="planOpen = !planOpen"
+      >
+        <Icon name="ph:target-bold" size="12" aria-hidden="true" />
+        <span>Plan SL / TP</span>
+        <UiBadge v-if="stopLossPct !== null || takeProfitPct !== null" variant="accent">
+          {{ stopLossPct !== null ? `-${stopLossPct}%` : '—' }}
+          <span class="sep" aria-hidden="true">/</span>
+          {{ takeProfitPct !== null ? `+${takeProfitPct}%` : '—' }}
+        </UiBadge>
+        <Icon :name="planOpen ? 'ph:caret-up-bold' : 'ph:caret-down-bold'" size="11" class="caret" />
+      </button>
+
+      <section v-if="planOpen" class="plan">
+        <div class="plan-fields">
+          <label class="plan-field">
+            <span>Stop-loss (%)</span>
+            <input v-model.number="stopLossPct" type="number" min="0.1" step="0.1" placeholder="ex. 3" />
+            <small v-if="stopLossPrice !== null">${{ fmtPrice(stopLossPrice) }}</small>
+          </label>
+          <label class="plan-field">
+            <span>Take-profit (%)</span>
+            <input v-model.number="takeProfitPct" type="number" min="0.1" step="0.1" placeholder="ex. 6" />
+            <small v-if="takeProfitPrice !== null">${{ fmtPrice(takeProfitPrice) }}</small>
+          </label>
+        </div>
+
+        <dl class="plan-preview" v-if="parsedAmount > 0 || riskReward !== null">
+          <div v-if="riskAmount !== null">
+            <dt>Risque max</dt>
+            <dd class="risk">-${{ riskAmount.toFixed(2) }}</dd>
+          </div>
+          <div v-if="rewardAmount !== null">
+            <dt>Reward cible</dt>
+            <dd class="reward">+${{ rewardAmount.toFixed(2) }}</dd>
+          </div>
+          <div v-if="riskReward !== null">
+            <dt>R:R</dt>
+            <dd :data-good="riskReward >= 1.5">
+              1 : {{ riskReward.toFixed(2) }}
+            </dd>
+          </div>
+        </dl>
+
+        <div class="plan-actions">
+          <UiButton variant="secondary" size="sm" @click="clearPlan">
+            Effacer
+          </UiButton>
+          <UiButton variant="primary" size="sm" @click="savePlan">
+            <Icon name="ph:check-bold" size="12" />
+            Sauvegarder le plan
+          </UiButton>
+        </div>
+        <p class="plan-hint">
+          Simulation uniquement. Les ordres SL/TP automatiques ne sont pas encore exécutés côté serveur.
+        </p>
+      </section>
 
       <button
         type="submit"
@@ -240,6 +374,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: $space-md;
+  min-width: 0;
 }
 
 .ticket-head {
@@ -256,12 +391,12 @@ onBeforeUnmount(() => {
 
 .side-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: $space-2xs;
   background: $color-bg;
   border: 1px solid $color-border;
   border-radius: $radius-md;
-  padding: 2px;
+  padding: $space-2xs;
 
   .tab {
     appearance: none;
@@ -273,9 +408,15 @@ onBeforeUnmount(() => {
     font-weight: $fw-semibold;
     padding: $space-sm $space-md;
     border-radius: $radius-sm;
-    transition: background $transition-fast, color $transition-fast;
+    transition:
+      background $duration-base $ease-emphasized,
+      color $duration-fast $ease-standard,
+      transform $duration-instant $ease-standard;
+    min-width: 0;
 
     &:hover { color: $color-text; }
+    &:active { transform: scale(0.97); }
+    &:focus-visible { @include ring-inset; }
 
     &.active.buy {
       background: $color-accent-soft;
@@ -290,7 +431,7 @@ onBeforeUnmount(() => {
 
 .avail {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: $space-sm;
   margin: 0;
 
@@ -299,6 +440,7 @@ onBeforeUnmount(() => {
     border: 1px solid $color-border;
     border-radius: $radius-sm;
     padding: $space-sm $space-md;
+    min-width: 0;
   }
 
   dt {
@@ -309,10 +451,11 @@ onBeforeUnmount(() => {
   }
 
   dd {
-    margin: 2px 0 0;
+    margin: $space-2xs 0 0;
     font-family: $font-mono;
     font-size: $fs-sm;
     color: $color-text;
+    @include truncate;
   }
 }
 
@@ -427,6 +570,121 @@ onBeforeUnmount(() => {
     dt { font-weight: $fw-medium; color: $color-text; }
     dd { font-weight: $fw-semibold; }
   }
+}
+
+.plan-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px $space-md;
+  background: $color-bg;
+  border: 1px dashed $color-border;
+  border-radius: $radius-md;
+  color: $color-text-muted;
+  font-size: $fs-xs;
+  font-weight: $fw-medium;
+  cursor: pointer;
+  transition: color $transition-fast, border-color $transition-fast;
+
+  .sep { margin: 0 2px; opacity: 0.6; }
+  .caret { margin-left: auto; }
+
+  &:hover { color: $color-text; border-color: $color-border-hover; }
+  &:focus-visible { @include ring-inset; }
+}
+
+.plan {
+  @include stack($space-sm);
+  padding: $space-sm $space-md;
+  background: $color-bg;
+  border: 1px solid $color-border;
+  border-radius: $radius-md;
+}
+
+.plan-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: $space-sm;
+}
+
+.plan-field {
+  display: flex;
+  flex-direction: column;
+  gap: $space-2xs;
+  min-width: 0;
+
+  > span {
+    font-size: $fs-3xs;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: $color-text-dim;
+  }
+
+  input {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: $space-xs $space-sm;
+    background: $color-surface;
+    border: 1px solid $color-border;
+    border-radius: $radius-sm;
+    color: $color-text;
+    font-size: $fs-sm;
+    font-family: $font-mono;
+
+    &:focus-visible { border-color: $color-accent; @include ring-inset; }
+  }
+
+  small {
+    font-family: $font-mono;
+    font-size: $fs-3xs;
+    color: $color-text-dim;
+    @include truncate;
+  }
+}
+
+.plan-preview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+  gap: $space-xs;
+  margin: 0;
+  padding: $space-xs 0;
+
+  > div {
+    display: flex;
+    flex-direction: column;
+    gap: $space-2xs;
+    min-width: 0;
+  }
+
+  dt { font-size: $fs-3xs; color: $color-text-dim; letter-spacing: 0.04em; text-transform: uppercase; }
+  dd {
+    margin: 0;
+    font-family: $font-mono;
+    font-size: $fs-sm;
+    color: $color-text;
+    @include truncate;
+  }
+
+  .risk   { color: $color-danger; }
+  .reward { color: $color-accent; }
+  dd[data-good='true']  { color: $color-accent; }
+  dd[data-good='false'] { color: $color-warning; }
+}
+
+.plan-actions {
+  display: flex;
+  gap: $space-sm;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.plan-hint {
+  font-size: $fs-3xs;
+  color: $color-text-dim;
+  font-style: italic;
+  margin: 0;
+  text-align: center;
 }
 
 .submit {

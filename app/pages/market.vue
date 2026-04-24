@@ -5,6 +5,7 @@ import { useMarketStore } from '~/stores/market'
 useHead({ title: 'Marché · Paper-Trade' })
 
 const store = useMarketStore()
+const ui = useUiPreferencesStore()
 const now = useNow(1000)
 const marketAgeSec = computed(() => store.dataAgeSec(now.value))
 const marketFreshness = computed(() => store.freshness(now.value))
@@ -72,7 +73,11 @@ const rows = computed<Row[]>(() =>
 const filtered = computed<Row[]>(() => {
   const q = searchQuery.value.trim().toLowerCase()
   return rows.value.filter((r) => {
+    if (viewMode.value === 'watchlist' && !ui.isWatched(r.asset.pair)) return false
     if (filterCategory.value !== 'all' && r.asset.category !== filterCategory.value) return false
+    if (filters.perfMin !== null && (r.ticker?.changePct ?? -Infinity) < filters.perfMin) return false
+    if (filters.perfMax !== null && (r.ticker?.changePct ?? Infinity) > filters.perfMax) return false
+    if (filters.volumeMin !== null && (r.ticker?.volume24h ?? 0) < filters.volumeMin) return false
     if (!q) return true
     return (
       r.asset.symbol.toLowerCase().includes(q)
@@ -125,13 +130,43 @@ function selectCategory(key: 'all' | CategoryKey) {
 }
 
 // ─── Colonnes de la table ──────────────────────────────────────────────────
-const columns: { key: SortKey, label: string, className: string }[] = [
-  { key: 'symbol',   label: 'Actif',       className: 'col-sym' },
-  { key: 'category', label: 'Catégorie',   className: 'col-cat' },
-  { key: 'price',    label: 'Prix',        className: 'col-num' },
-  { key: 'perf',     label: '24 h %',      className: 'col-num' },
-  { key: 'volume',   label: 'Volume 24 h', className: 'col-num' },
+type ColumnKey = SortKey | 'highLow'
+
+interface Column {
+  key: ColumnKey
+  label: string
+  className: string
+  sortable: boolean
+  optional?: boolean
+}
+
+const allColumns: Column[] = [
+  { key: 'symbol',   label: 'Actif',       className: 'col-sym', sortable: true },
+  { key: 'category', label: 'Catégorie',   className: 'col-cat', sortable: true },
+  { key: 'price',    label: 'Prix',        className: 'col-num', sortable: true },
+  { key: 'perf',     label: '24 h %',      className: 'col-num', sortable: true },
+  { key: 'highLow',  label: 'H / L 24 h',  className: 'col-num', sortable: false, optional: true },
+  { key: 'volume',   label: 'Volume 24 h', className: 'col-num', sortable: true },
 ]
+
+const visibleCols = computed<ColumnKey[]>(() => {
+  const s = new Set(ui.state.marketColumns as ColumnKey[])
+  // garantir que 'symbol' est toujours visible
+  s.add('symbol')
+  return allColumns.filter(c => s.has(c.key)).map(c => c.key)
+})
+
+const columns = computed<Column[]>(() =>
+  allColumns.filter(c => visibleCols.value.includes(c.key)),
+)
+
+function toggleColumn(key: ColumnKey) {
+  const s = new Set(ui.state.marketColumns as ColumnKey[])
+  if (s.has(key)) s.delete(key)
+  else s.add(key)
+  s.add('symbol')
+  ui.setMarketColumns(Array.from(s) as ColumnKey[])
+}
 
 const sortPresets: { id: string, label: string, sort: SortKey, dir: SortDir }[] = [
   { id: 'gainers', label: 'Top gainers', sort: 'perf', dir: 'desc' },
@@ -147,6 +182,120 @@ function applyPreset(preset: { sort: SortKey, dir: SortDir }) {
   sortBy.value = preset.sort
   sortDir.value = preset.dir
 }
+
+function toggleWatch(pair: string) {
+  ui.toggleWatch(pair)
+}
+
+type ScreenerView = 'all' | 'watchlist'
+const viewMode = ref<ScreenerView>((route.query.view as ScreenerView) === 'watchlist' ? 'watchlist' : 'all')
+watch(viewMode, (v) => {
+  const query = { ...route.query }
+  if (v === 'watchlist') query.view = 'watchlist'
+  else delete query.view
+  router.replace({ query })
+})
+
+// ─── Filtres numériques avancés ────────────────────────────────────────────
+const filters = reactive({
+  perfMin: route.query.pmin ? Number(route.query.pmin) : null as number | null,
+  perfMax: route.query.pmax ? Number(route.query.pmax) : null as number | null,
+  volumeMin: route.query.vmin ? Number(route.query.vmin) : null as number | null,
+})
+const advancedOpen = ref(false)
+
+watch(filters, () => {
+  const query = { ...route.query }
+  filters.perfMin === null ? delete query.pmin : query.pmin = String(filters.perfMin)
+  filters.perfMax === null ? delete query.pmax : query.pmax = String(filters.perfMax)
+  filters.volumeMin === null ? delete query.vmin : query.vmin = String(filters.volumeMin)
+  router.replace({ query })
+}, { deep: true })
+
+const activeFilterCount = computed(() => {
+  let n = 0
+  if (filters.perfMin !== null) n++
+  if (filters.perfMax !== null) n++
+  if (filters.volumeMin !== null) n++
+  return n
+})
+
+function resetAdvancedFilters() {
+  filters.perfMin = null
+  filters.perfMax = null
+  filters.volumeMin = null
+}
+
+// ─── Menu colonnes & vues sauvegardées ─────────────────────────────────────
+const columnsMenuOpen = ref(false)
+const viewsMenuOpen = ref(false)
+const newViewName = ref('')
+
+function saveCurrentView() {
+  const name = newViewName.value.trim() || `Vue ${ui.state.marketViews.length + 1}`
+  ui.saveMarketView({
+    label: name,
+    category: filterCategory.value,
+    query: searchQuery.value,
+    sort: sortBy.value,
+    dir: sortDir.value,
+    columns: ui.state.marketColumns,
+  })
+  newViewName.value = ''
+  viewsMenuOpen.value = false
+}
+
+function applyView(view: (typeof ui.state.marketViews)[number]) {
+  filterCategory.value = view.category as typeof filterCategory.value
+  searchQuery.value = view.query
+  sortBy.value = view.sort as SortKey
+  sortDir.value = view.dir
+  ui.setMarketColumns(view.columns)
+  viewsMenuOpen.value = false
+}
+
+function deleteView(id: string) {
+  ui.deleteMarketView(id)
+}
+
+function closeAllMenus() {
+  columnsMenuOpen.value = false
+  viewsMenuOpen.value = false
+}
+
+// Références aux triggers pour restaurer le focus lors de la fermeture via Esc.
+// `UiButton` est un composant wrappant un <button> : on accède à $el.
+const columnsTrigger = ref<{ $el: HTMLElement } | null>(null)
+const viewsTrigger = ref<{ $el: HTMLElement } | null>(null)
+
+function restoreFocus(target: { $el: HTMLElement } | null) {
+  const el = target?.$el
+  if (el && typeof el.focus === 'function') el.focus()
+}
+
+onMounted(() => {
+  const onDocClick = (e: MouseEvent) => {
+    const target = e.target as HTMLElement | null
+    if (!target?.closest('.menu-wrap')) closeAllMenus()
+  }
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape') return
+    if (!columnsMenuOpen.value && !viewsMenuOpen.value) return
+    const wasCols = columnsMenuOpen.value
+    const wasViews = viewsMenuOpen.value
+    closeAllMenus()
+    nextTick(() => {
+      if (wasCols) restoreFocus(columnsTrigger.value)
+      else if (wasViews) restoreFocus(viewsTrigger.value)
+    })
+  }
+  document.addEventListener('click', onDocClick)
+  document.addEventListener('keydown', onKey)
+  onBeforeUnmount(() => {
+    document.removeEventListener('click', onDocClick)
+    document.removeEventListener('keydown', onKey)
+  })
+})
 
 // ─── Stats globales (sur le filtre courant) ────────────────────────────────
 const summary = computed(() => {
@@ -188,50 +337,51 @@ const unavailableCount = computed(() =>
 
 <template>
   <section class="market">
-    <header class="head">
-      <div>
-        <h1>Marché</h1>
-        <p class="sub">
-          {{ summary.count }} actif<span v-if="summary.count > 1">s</span>
-          · {{ summary.gainers }} en hausse · {{ summary.losers }} en baisse
-        </p>
-      </div>
-      <span class="chip" :data-status="store.streamStatus">
-        <span class="dot" />
-        {{ store.streamStatus === 'live' ? 'Live · Binance WS' : store.streamStatus }}
-      </span>
-      <span class="freshness" :data-freshness="marketFreshness">
-        {{ marketAgeSec === null ? 'Données absentes' : `MAJ ${marketAgeSec}s` }}
-      </span>
-      <span class="meta">
-        {{ store.transportMode.toUpperCase() }} ·
-        {{ marketLatency === null ? 'latence —' : `${marketLatency}ms` }} ·
-        switch {{ store.fallbackSwitchCount }}{{ lastSwitchSec === null ? '' : ` (il y a ${lastSwitchSec}s)` }}
-      </span>
-    </header>
+    <PageHeader
+      kicker="Exploration"
+      title="Marché"
+    >
+      <template #subtitle>
+        {{ summary.count }} actif<span v-if="summary.count > 1">s</span>
+        · {{ summary.gainers }} en hausse · {{ summary.losers }} en baisse
+      </template>
+      <template #meta>
+        <MarketStatusBadge :status="store.streamStatus" :source="store.source" />
+        <FreshnessBadge :age-sec="marketAgeSec" :freshness="marketFreshness" />
+        <MarketMeta
+          :transport-mode="store.transportMode"
+          :latency-ms="marketLatency"
+          :switch-count="store.fallbackSwitchCount"
+          :last-switch-sec="lastSwitchSec"
+        />
+      </template>
+    </PageHeader>
 
     <!-- Stats -->
     <div class="stats">
-      <article class="stat">
-        <span class="label">Performance moyenne</span>
-        <strong class="value" :data-trend="trendOf(summary.avg)">{{ fmtPerf(summary.avg) }}</strong>
-        <span class="sub">sur la sélection</span>
-      </article>
-      <article class="stat">
-        <span class="label">Volume 24 h</span>
-        <strong class="value">{{ fmtVolume(summary.volume) }}</strong>
-        <span class="sub">cumulé USDT</span>
-      </article>
-      <article class="stat">
-        <span class="label">Gainers</span>
-        <strong class="value" style="color: var(--color-accent)">{{ summary.gainers }}</strong>
-        <span class="sub">sur {{ summary.count }}</span>
-      </article>
-      <article class="stat">
-        <span class="label">Losers</span>
-        <strong class="value" style="color: var(--color-danger)">{{ summary.losers }}</strong>
-        <span class="sub">sur {{ summary.count }}</span>
-      </article>
+      <UiStatCard
+        label="Performance moyenne"
+        :value="fmtPerf(summary.avg)"
+        :trend="trendOf(summary.avg)"
+        hint="sur la sélection"
+      />
+      <UiStatCard
+        label="Volume 24 h"
+        :value="fmtVolume(summary.volume)"
+        hint="cumulé USDT"
+      />
+      <UiStatCard
+        label="Gainers"
+        :value="String(summary.gainers)"
+        trend="up"
+        :hint="`sur ${summary.count}`"
+      />
+      <UiStatCard
+        label="Losers"
+        :value="String(summary.losers)"
+        trend="down"
+        :hint="`sur ${summary.count}`"
+      />
     </div>
 
     <!-- Filtres catégorie + recherche -->
@@ -260,17 +410,166 @@ const unavailableCount = computed(() =>
       </div>
     </div>
 
-    <div class="presets">
-      <button
-        v-for="preset in sortPresets"
-        :key="preset.id"
-        class="preset"
-        :class="{ active: activePreset === preset.id }"
-        :aria-label="`Activer le preset ${preset.label}`"
-        @click="applyPreset(preset)"
+    <div class="presets-row">
+      <UiTabs
+        v-model="viewMode"
+        :items="[
+          { key: 'all', label: 'Tout', icon: 'ph:grid-four-bold' },
+          { key: 'watchlist', label: `Watchlist (${ui.state.watchlist.length})`, icon: 'ph:star-bold' },
+        ]"
+        aria-label="Vue du screener"
+        size="sm"
+      />
+      <div class="presets">
+        <button
+          v-for="preset in sortPresets"
+          :key="preset.id"
+          class="preset"
+          :class="{ active: activePreset === preset.id }"
+          :aria-label="`Activer le preset ${preset.label}`"
+          @click="applyPreset(preset)"
+        >
+          {{ preset.label }}
+        </button>
+      </div>
+      <div class="screener-tools">
+        <UiButton
+          variant="ghost"
+          size="sm"
+          :aria-expanded="advancedOpen"
+          :aria-label="advancedOpen ? 'Fermer les filtres avancés' : 'Ouvrir les filtres avancés'"
+          @click="advancedOpen = !advancedOpen"
+        >
+          <Icon name="ph:funnel-bold" size="12" />
+          Filtres
+          <UiBadge v-if="activeFilterCount" variant="accent">{{ activeFilterCount }}</UiBadge>
+        </UiButton>
+
+        <div class="menu-wrap">
+          <UiButton
+            ref="columnsTrigger"
+            variant="ghost"
+            size="sm"
+            :aria-expanded="columnsMenuOpen"
+            aria-haspopup="true"
+            aria-controls="columns-menu"
+            aria-label="Configurer les colonnes"
+            @click.stop="columnsMenuOpen = !columnsMenuOpen; viewsMenuOpen = false"
+          >
+            <Icon name="ph:columns-bold" size="12" />
+            Colonnes
+          </UiButton>
+          <div
+            v-if="columnsMenuOpen"
+            id="columns-menu"
+            class="menu"
+            role="group"
+            aria-label="Colonnes affichées"
+          >
+            <p class="menu-title">Colonnes affichées</p>
+            <label
+              v-for="c in allColumns"
+              :key="c.key"
+              class="menu-option"
+              :class="{ locked: c.key === 'symbol' }"
+            >
+              <input
+                type="checkbox"
+                :checked="visibleCols.includes(c.key)"
+                :disabled="c.key === 'symbol'"
+                @change="toggleColumn(c.key)"
+              />
+              <span>{{ c.label }}</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="menu-wrap">
+          <UiButton
+            ref="viewsTrigger"
+            variant="ghost"
+            size="sm"
+            :aria-expanded="viewsMenuOpen"
+            aria-haspopup="true"
+            aria-controls="views-menu"
+            aria-label="Gérer les vues sauvegardées"
+            @click.stop="viewsMenuOpen = !viewsMenuOpen; columnsMenuOpen = false"
+          >
+            <Icon name="ph:bookmark-bold" size="12" />
+            Vues
+            <UiBadge v-if="ui.state.marketViews.length" variant="neutral">
+              {{ ui.state.marketViews.length }}
+            </UiBadge>
+          </UiButton>
+          <div
+            v-if="viewsMenuOpen"
+            id="views-menu"
+            class="menu views-menu"
+            role="group"
+            aria-label="Vues sauvegardées"
+          >
+            <p class="menu-title">Vues sauvegardées</p>
+            <ul v-if="ui.state.marketViews.length" class="views-list">
+              <li v-for="v in ui.state.marketViews" :key="v.id" class="view-item">
+                <button class="view-apply" @click="applyView(v)" :aria-label="`Appliquer la vue ${v.label}`">
+                  {{ v.label }}
+                </button>
+                <button class="view-del" :aria-label="`Supprimer la vue ${v.label}`" @click="deleteView(v.id)">
+                  <Icon name="ph:trash-bold" size="11" />
+                </button>
+              </li>
+            </ul>
+            <p v-else class="view-empty">Aucune vue enregistrée.</p>
+            <form class="view-save" @submit.prevent="saveCurrentView">
+              <input
+                v-model="newViewName"
+                type="text"
+                placeholder="Nom de la vue"
+                :aria-label="'Nom de la vue à sauvegarder'"
+              />
+              <UiButton type="submit" variant="primary" size="sm">Sauvegarder</UiButton>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="advancedOpen" class="advanced">
+      <div class="adv-group">
+        <label class="adv-label">Perf min (%)</label>
+        <input
+          v-model.number="filters.perfMin"
+          type="number"
+          step="0.5"
+          placeholder="ex. 5"
+        />
+      </div>
+      <div class="adv-group">
+        <label class="adv-label">Perf max (%)</label>
+        <input
+          v-model.number="filters.perfMax"
+          type="number"
+          step="0.5"
+          placeholder="ex. 20"
+        />
+      </div>
+      <div class="adv-group">
+        <label class="adv-label">Volume min (USDT)</label>
+        <input
+          v-model.number="filters.volumeMin"
+          type="number"
+          step="1000"
+          placeholder="ex. 1000000"
+        />
+      </div>
+      <UiButton
+        variant="ghost"
+        size="sm"
+        :disabled="activeFilterCount === 0"
+        @click="resetAdvancedFilters"
       >
-        {{ preset.label }}
-      </button>
+        Réinitialiser
+      </UiButton>
     </div>
 
     <!-- Heatmap -->
@@ -318,59 +617,89 @@ const unavailableCount = computed(() =>
         <table v-if="sorted.length" class="assets-table">
           <thead>
             <tr>
+              <th scope="col" class="col-watch" aria-label="Watchlist" />
               <th
                 v-for="col in columns"
                 :key="col.key"
-                :class="[col.className, { sorted: sortBy === col.key }]"
-                :data-dir="sortBy === col.key ? sortDir : null"
-                @click="toggleSort(col.key)"
+                :class="[col.className, { sorted: col.sortable && sortBy === col.key }]"
+                :aria-sort="col.sortable && sortBy === col.key ? (sortDir === 'asc' ? 'ascending' : 'descending') : undefined"
+                scope="col"
               >
-                {{ col.label }}
-                <Icon
-                  :name="sortBy === col.key
-                    ? (sortDir === 'asc' ? 'ph:caret-up-bold' : 'ph:caret-down-bold')
-                    : 'ph:caret-up-down-bold'"
-                  size="11"
-                />
+                <button
+                  v-if="col.sortable"
+                  type="button"
+                  class="sort-btn"
+                  :aria-label="`Trier par ${col.label}`"
+                  @click="toggleSort(col.key as SortKey)"
+                >
+                  <span>{{ col.label }}</span>
+                  <Icon
+                    :name="sortBy === col.key
+                      ? (sortDir === 'asc' ? 'ph:caret-up-bold' : 'ph:caret-down-bold')
+                      : 'ph:caret-up-down-bold'"
+                    size="11"
+                    aria-hidden="true"
+                  />
+                </button>
+                <span v-else class="col-static">{{ col.label }}</span>
               </th>
             </tr>
           </thead>
           <tbody>
-            <tr
-              v-for="r in sorted"
-              :key="r.asset.pair"
-              class="row-link"
-              tabindex="0"
-              @click="router.push(`/token/${r.asset.pair}`)"
-              @keydown.enter="router.push(`/token/${r.asset.pair}`)"
-            >
-              <td class="cell-sym">
-                <NuxtLink :to="`/token/${r.asset.pair}`" class="sym-link" @click.stop>
+            <tr v-for="r in sorted" :key="r.asset.pair" class="row">
+              <td class="col-watch">
+                <button
+                  type="button"
+                  class="watch-btn"
+                  :class="{ active: ui.isWatched(r.asset.pair) }"
+                  :aria-pressed="ui.isWatched(r.asset.pair)"
+                  :aria-label="ui.isWatched(r.asset.pair) ? `Retirer ${r.asset.symbol} de la watchlist` : `Ajouter ${r.asset.symbol} à la watchlist`"
+                  @click.stop="toggleWatch(r.asset.pair)"
+                >
+                  <Icon :name="ui.isWatched(r.asset.pair) ? 'ph:star-fill' : 'ph:star-bold'" size="14" />
+                </button>
+              </td>
+              <td v-if="visibleCols.includes('symbol')" class="cell-sym">
+                <NuxtLink :to="`/token/${r.asset.pair}`" class="sym-link">
                   <span class="sym">{{ r.asset.symbol }}</span>
                   <span class="name">{{ r.asset.name }}</span>
                 </NuxtLink>
               </td>
-              <td>
+              <td v-if="visibleCols.includes('category')">
                 <span class="cat-tag" :style="{ '--cat-color': r.categoryColor }">
                   <span class="cat-dot" />
                   {{ r.categoryLabel }}
                 </span>
               </td>
-              <td class="col-num">{{ r.ticker ? '$' + fmtPrice(r.ticker.price) : store.pairDataLabel(r.asset.pair) }}</td>
-              <td class="col-num">
+              <td v-if="visibleCols.includes('price')" class="col-num">
+                {{ r.ticker ? '$' + fmtPrice(r.ticker.price) : store.pairDataLabel(r.asset.pair) }}
+              </td>
+              <td v-if="visibleCols.includes('perf')" class="col-num">
                 <span v-if="r.ticker" class="perf" :data-trend="trendOf(r.ticker.changePct)">
                   {{ fmtPerf(r.ticker.changePct) }}
                 </span>
                 <span v-else class="dim">{{ store.pairDataLabel(r.asset.pair) }}</span>
               </td>
-              <td class="col-num">{{ r.ticker ? fmtVolume(r.ticker.volume24h) : store.pairDataLabel(r.asset.pair) }}</td>
+              <td v-if="visibleCols.includes('highLow')" class="col-num high-low">
+                <template v-if="r.ticker">
+                  <span class="hl-up">${{ fmtPrice(r.ticker.high24h) }}</span>
+                  <span class="hl-sep">·</span>
+                  <span class="hl-down">${{ fmtPrice(r.ticker.low24h) }}</span>
+                </template>
+                <span v-else class="dim">—</span>
+              </td>
+              <td v-if="visibleCols.includes('volume')" class="col-num">
+                {{ r.ticker ? fmtVolume(r.ticker.volume24h) : store.pairDataLabel(r.asset.pair) }}
+              </td>
             </tr>
           </tbody>
         </table>
-        <div v-else class="table-empty">
-          <Icon name="ph:magnifying-glass-bold" size="18" />
-          <p>Aucun actif ne correspond à la recherche actuelle.</p>
-        </div>
+        <UiEmptyState
+          v-else
+          icon="ph:magnifying-glass-bold"
+          title="Aucun actif correspondant"
+          description="Ajuste tes filtres ou ta recherche pour voir plus d'actifs."
+        />
       </div>
     </section>
   </section>
@@ -379,91 +708,14 @@ const unavailableCount = computed(() =>
 <style lang="scss" scoped>
 .market { @include stack($space-xl); }
 
-// ─── Head ────────────────────────────────────────────────────────────────
-.head {
-  @include flex-between;
-  align-items: flex-end;
-  gap: $space-md;
-  flex-wrap: wrap;
-
-  h1 {
-    font-size: $fs-3xl;
-    letter-spacing: -0.02em;
-  }
-  .sub {
-    color: $color-text-muted;
-    font-size: $fs-sm;
-    margin-top: $space-xs;
-  }
-}
-
-.freshness {
-  font-size: $fs-xs;
-  font-family: $font-mono;
-  color: $color-text-muted;
-  &[data-freshness='fresh'] { color: $color-accent; }
-  &[data-freshness='delayed'] { color: $color-warning; }
-  &[data-freshness='stale'] { color: $color-danger; }
-}
-
-.meta {
-  font-size: $fs-xs;
-  color: $color-text-dim;
-  font-family: $font-mono;
-}
-
-.chip {
-  @include row($space-sm);
-  padding: $space-xs $space-md;
-  border: 1px solid $color-border;
-  border-radius: $radius-full;
-  font-size: $fs-xs;
-  color: $color-text-muted;
-  background: $color-surface;
-
-  .dot {
-    width: 6px;
-    height: 6px;
-    border-radius: $radius-full;
-    background: $color-text-dim;
-  }
-
-  &[data-status='live'] .dot {
-    background: $color-accent;
-    box-shadow: 0 0 0 4px $color-accent-soft;
-  }
-  &[data-status='offline'] .dot,
-  &[data-status='reconnecting'] .dot {
-    background: $color-danger;
-  }
-}
-
-// ─── Stats ───────────────────────────────────────────────────────────────
 .stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: $space-md;
-}
 
-.stat {
-  @include card;
-  @include stack($space-xs);
-
-  .label {
-    font-size: $fs-xs;
-    color: $color-text-muted;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  .value {
-    font-size: $fs-2xl;
-    @include mono-nums;
-    &[data-trend='up']   { color: $color-accent; }
-    &[data-trend='down'] { color: $color-danger; }
-  }
-  .sub {
-    font-size: $fs-xs;
-    color: $color-text-dim;
+  @include media-down($bp-sm) {
+    grid-template-columns: repeat(2, 1fr);
+    gap: $space-sm;
   }
 }
 
@@ -472,6 +724,11 @@ const unavailableCount = computed(() =>
   @include flex-between;
   gap: $space-md;
   flex-wrap: wrap;
+  min-width: 0;
+
+  @include media-down($bp-sm) {
+    .search { width: 100%; min-width: 0; }
+  }
 }
 
 .pills {
@@ -511,6 +768,7 @@ const unavailableCount = computed(() =>
     border-color: $color-border-hover;
     color: $color-text;
   }
+  &:focus-visible { @include ring-outset; }
 
   &.active {
     background: $color-surface-2;
@@ -531,10 +789,13 @@ const unavailableCount = computed(() =>
   border: 1px solid $color-border;
   border-radius: $radius-md;
   color: $color-text-muted;
-  min-width: 240px;
+  flex: 1 1 240px;
+  min-width: 0;
+  max-width: 420px;
 
   input {
     flex: 1;
+    min-width: 0;
     background: transparent;
     border: 0;
     outline: 0;
@@ -543,6 +804,12 @@ const unavailableCount = computed(() =>
     &::placeholder { color: $color-text-dim; }
     &::-webkit-search-cancel-button { filter: invert(0.6); }
   }
+}
+
+.presets-row {
+  @include flex-between;
+  gap: $space-md;
+  flex-wrap: wrap;
 }
 
 .presets {
@@ -564,6 +831,7 @@ const unavailableCount = computed(() =>
     border-color: $color-border-hover;
     color: $color-text;
   }
+  &:focus-visible { @include ring-outset; }
 
   &.active {
     border-color: $color-accent;
@@ -649,58 +917,59 @@ const unavailableCount = computed(() =>
 
 // ─── Table ───────────────────────────────────────────────────────────────
 .table-wrap {
-  @include card;
+  @include panel;
   padding: 0;
   overflow-x: auto;
-}
-
-.table-empty {
-  @include flex-center;
-  @include stack($space-sm);
-  color: $color-text-muted;
-  font-size: $fs-sm;
-  min-height: 180px;
+  @include scrollbar;
 }
 
 .assets-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: $fs-sm;
+  @include table-reset;
 
   thead th {
-    @include row($space-xs);
-    display: table-cell;
-    padding: $space-md $space-lg;
+    padding: 0;
     text-align: left;
     font-weight: $fw-medium;
-    color: $color-text-muted;
+    color: var(--text-secondary);
     font-size: $fs-xs;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     border-bottom: 1px solid $color-border;
-    cursor: pointer;
-    user-select: none;
     white-space: nowrap;
 
-    &:hover { color: $color-text; }
     &.sorted { color: $color-accent; }
-
     &.col-num { text-align: right; }
+  }
+
+  .sort-btn {
+    @include row($space-xs);
+    width: 100%;
+    padding: $space-md $space-lg;
+    color: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    text-transform: inherit;
+    letter-spacing: inherit;
+    text-align: left;
+    border-radius: 0;
+    background: transparent;
+
+    &:hover { color: $color-text; }
+    &:focus-visible { @include ring-inset; }
+  }
+
+  th.col-num .sort-btn {
+    justify-content: flex-end;
+    text-align: right;
   }
 
   tbody tr {
     border-bottom: 1px solid $color-border;
-    transition: background $transition-fast;
+    transition: background $duration-fast $ease-standard;
+    @include anim-fade-in($duration-fast, $ease-decelerate);
     &:last-child { border-bottom: 0; }
     &:hover { background: $color-surface-2; }
-
-    &.row-link {
-      cursor: pointer;
-      &:focus-visible {
-        outline: 2px solid $color-accent;
-        outline-offset: -2px;
-      }
-    }
+    &:focus-within { background: $color-surface-2; }
   }
 
   td {
@@ -712,9 +981,13 @@ const unavailableCount = computed(() =>
 }
 
 .cell-sym {
-  .sym-link { color: inherit; display: block; }
+  .sym-link {
+    color: inherit;
+    display: block;
+    &:focus-visible { outline: 2px solid $color-accent; outline-offset: 4px; border-radius: $radius-sm; }
+  }
   .sym  { display: block; font-weight: $fw-semibold; @include mono-nums; }
-  .name { display: block; color: $color-text-muted; font-size: $fs-xs; margin-top: 2px; }
+  .name { display: block; color: var(--text-secondary); font-size: $fs-xs; margin-top: 2px; }
 }
 
 .cat-tag {
@@ -739,6 +1012,216 @@ const unavailableCount = computed(() =>
   font-weight: $fw-semibold;
   &[data-trend='up']   { color: $color-accent; }
   &[data-trend='down'] { color: $color-danger; }
+}
+
+.screener-tools {
+  @include row($space-xs);
+  flex-wrap: wrap;
+  margin-left: auto;
+
+  @include media-down($bp-md) {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
+.menu-wrap {
+  position: relative;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + #{$space-xs});
+  min-width: 240px;
+  max-width: calc(100vw - #{$space-md * 2});
+  padding: $space-sm;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-radius: $radius-md;
+  box-shadow: $shadow-md;
+  z-index: $z-dropdown;
+  @include stack($space-xs);
+}
+
+.menu-title {
+  font-size: $fs-3xs;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: $color-text-dim;
+  margin-bottom: $space-xs;
+}
+
+.menu-option {
+  @include row($space-sm);
+  padding: $space-xs;
+  border-radius: $radius-sm;
+  font-size: $fs-sm;
+  color: $color-text;
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+
+  &:hover { background: $color-surface-2; }
+  &:focus-within { @include ring-inset; }
+  &.locked { opacity: 0.6; cursor: not-allowed; }
+
+  input[type='checkbox'] { accent-color: $color-accent; flex-shrink: 0; }
+
+  > span { @include truncate; flex: 1; }
+}
+
+.views-menu {
+  min-width: 280px;
+  max-width: calc(100vw - #{$space-md * 2});
+}
+
+.views-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  @include stack($space-2xs);
+}
+
+.view-item {
+  @include row($space-xs);
+  border-radius: $radius-sm;
+  min-width: 0;
+
+  &:hover { background: $color-surface-2; }
+
+  .view-apply {
+    flex: 1;
+    min-width: 0;
+    padding: $space-xs $space-sm;
+    background: transparent;
+    border: 0;
+    color: $color-text;
+    text-align: left;
+    font-size: $fs-sm;
+    cursor: pointer;
+    border-radius: $radius-sm;
+    @include truncate;
+
+    &:focus-visible { @include ring-inset; }
+  }
+
+  .view-del {
+    padding: $space-xs;
+    background: transparent;
+    border: 0;
+    color: $color-text-dim;
+    cursor: pointer;
+    border-radius: $radius-sm;
+    flex-shrink: 0;
+
+    &:hover { color: $color-danger; background: $color-danger-soft; }
+    &:focus-visible { @include ring-inset; }
+  }
+}
+
+.view-empty {
+  font-size: $fs-xs;
+  color: $color-text-dim;
+  padding: $space-xs 0;
+}
+
+.view-save {
+  @include row($space-xs);
+  padding-top: $space-xs;
+  border-top: 1px dashed $color-border;
+
+  input {
+    flex: 1;
+    min-width: 0;
+    width: 100%;
+    padding: $space-xs $space-sm;
+    background: $color-surface-2;
+    border: 1px solid $color-border;
+    border-radius: $radius-sm;
+    color: $color-text;
+    font-size: $fs-xs;
+
+    &::placeholder { color: $color-text-dim; }
+  }
+}
+
+.advanced {
+  @include row($space-md);
+  flex-wrap: wrap;
+  padding: $space-md;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-radius: $radius-md;
+
+  .adv-group {
+    @include stack($space-xs);
+    flex: 1 1 120px;
+    min-width: 0;
+
+    .adv-label {
+      font-size: $fs-3xs;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: $color-text-dim;
+    }
+
+    input {
+      width: 100%;
+      min-width: 0;
+      padding: $space-xs $space-sm;
+      background: $color-surface-2;
+      border: 1px solid $color-border;
+      border-radius: $radius-sm;
+      color: $color-text;
+      font-size: $fs-sm;
+      font-family: $font-mono;
+      width: 100%;
+
+      &:focus-visible { border-color: $color-accent; @include ring-inset; }
+    }
+  }
+}
+
+.high-low {
+  @include mono-nums;
+  font-size: $fs-xs;
+
+  .hl-up   { color: $color-accent; }
+  .hl-down { color: $color-danger; }
+  .hl-sep  { color: $color-text-dim; margin: 0 4px; }
+}
+
+.col-static {
+  display: block;
+  padding: $space-md $space-lg;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.assets-table th.col-num .col-static { text-align: right; }
+
+.col-watch {
+  width: 42px;
+  padding-left: $space-md;
+  padding-right: 0;
+}
+
+.watch-btn {
+  @include flex-center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  color: $color-text-dim;
+  border-radius: $radius-sm;
+  cursor: pointer;
+  transition: color $transition-fast, background $transition-fast;
+
+  &:hover { color: $color-text; background: $color-surface-2; }
+  &.active { color: $color-warning; }
+  &:focus-visible { @include ring-inset; }
 }
 
 .dim { color: $color-text-dim; }

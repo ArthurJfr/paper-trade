@@ -6,22 +6,28 @@ import type {
   PositionSummary,
   TradeRecord,
 } from '~~/shared/types/portfolio'
+import type { WalletSnapshot } from '~/composables/useWallets' /* type-only import pour typer rehydrate */
 
 /**
- * Store du portefeuille paper-trading.
- * Hydraté initialement via GET /api/portfolio (SSR-friendly),
- * puis mis à jour à chaque ordre via applyOrderResult().
+ * Store du portefeuille paper-trading, scopé au wallet actif.
  *
- * La valorisation mark-to-market côté client est recalculée en live
- * via le store market (tickers WebSocket), voir getters `*Live`.
+ * - Hydraté initialement via GET /api/wallets/:id puis mis à jour à chaque
+ *   ordre via applyOrderResult().
+ * - La valorisation mark-to-market côté client est recalculée en live via
+ *   le store market (tickers WebSocket), voir getters `*Live`.
+ * - Le changement de wallet se fait via `useWalletsStore().setActive(id)`,
+ *   qui appelle `rehydrate(id)` sur ce store.
  */
 export const usePortfolioStore = defineStore('portfolio', () => {
   const marketStore = useMarketStore()
 
   // ─── State ────────────────────────────────────────────────────────────
+  const walletId   = ref<number | null>(null)
   const account    = ref<AccountState | null>(null)
   const positions  = ref<PositionSummary[]>([])
   const hydratedAt = ref<number>(0)
+  const loading    = ref<boolean>(false)
+  const lastError  = ref<string | null>(null)
 
   // ─── Lookups ──────────────────────────────────────────────────────────
   const positionByPair = computed(() => {
@@ -34,7 +40,6 @@ export const usePortfolioStore = defineStore('portfolio', () => {
 
   // ─── Valorisation live (prix depuis le market store) ──────────────────
 
-  /** Somme Σ quantity × lastPrice (fallback: avgCost si prix absent). */
   const marketValue = computed(() => {
     let total = 0
     for (const p of positions.value) {
@@ -45,14 +50,12 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     return total
   })
 
-  /** Capital investi cumulé (Σ quantity × avgCost). */
   const investedValue = computed(() => {
     let total = 0
     for (const p of positions.value) total += p.quantity * p.avgCost
     return total
   })
 
-  /** Equity totale (cash + valeur marché), temps-réel. */
   const equity = computed(() => {
     if (!account.value) return 0
     return account.value.cashBalance + marketValue.value
@@ -66,7 +69,6 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     return ((equity.value - initial) / initial) * 100
   })
 
-  /** Détail enrichi par position (qty, avg, last, valeur, pnl). */
   const positionRows = computed(() => positions.value.map((p) => {
     const t = marketStore.tickers[p.pair]
     const last = t?.price ?? p.avgCost
@@ -89,16 +91,35 @@ export const usePortfolioStore = defineStore('portfolio', () => {
 
   // ─── Actions ──────────────────────────────────────────────────────────
 
-  /** Remplace le state avec un snapshot serveur. */
-  function hydrate(snap: PortfolioSnapshot) {
-    account.value    = snap.account
-    positions.value  = [...snap.positions]
+  /**
+   * Remplace le state avec un snapshot serveur (format /api/wallets/:id,
+   * ou éventuellement un `PortfolioSnapshot` legacy pour les tests).
+   */
+  function hydrate(snap: PortfolioSnapshot | WalletSnapshot) {
+    if ('account' in snap && snap.account) {
+      account.value   = snap.account
+      walletId.value  = snap.account.walletId ?? null
+    } else if ('id' in snap) {
+      // /api/wallets/:id : le snapshot est un WalletWithStats enrichi
+      walletId.value = snap.id
+      account.value = {
+        walletId:       snap.id,
+        cashBalance:    snap.cashBalance,
+        initialBalance: snap.initialBalance,
+        updatedAt:      snap.updatedAt,
+      }
+    }
+    positions.value  = 'positions' in snap && Array.isArray(snap.positions)
+      ? [...snap.positions]
+      : []
     hydratedAt.value = Date.now()
+    lastError.value  = null
   }
 
   /** Applique en local le résultat d'un ordre (évite un round-trip supplémentaire). */
   function applyOrderResult(result: OrderResult) {
     account.value = result.account
+    if (result.account?.walletId) walletId.value = result.account.walletId
 
     const idx = positions.value.findIndex(p => p.pair === result.trade.pair)
     if (result.position) {
@@ -111,17 +132,39 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     hydratedAt.value = Date.now()
   }
 
+  /** Re-charge le snapshot du wallet spécifié (utilisé au switch de wallet). */
+  async function rehydrate(id: number): Promise<void> {
+    if (!id) return
+    loading.value = true
+    lastError.value = null
+    try {
+      const snap = await $fetch<WalletSnapshot>(`/api/wallets/${id}`)
+      hydrate(snap)
+    } catch (err: unknown) {
+      lastError.value = extractErrorMessage(err)
+      // On ne wipe pas le state pour éviter un "flash vide" : on garde
+      // l'ancien snapshot jusqu'à ce qu'on ait quelque chose de valide.
+    } finally {
+      loading.value = false
+    }
+  }
+
   function reset() {
+    walletId.value   = null
     account.value    = null
     positions.value  = []
     hydratedAt.value = 0
+    lastError.value  = null
   }
 
   return {
     // state
+    walletId,
     account,
     positions,
     hydratedAt,
+    loading,
+    lastError,
     // getters
     positionByPair,
     positionCount,
@@ -135,8 +178,23 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     // actions
     hydrate,
     applyOrderResult,
+    rehydrate,
     reset,
   }
 })
+
+function extractErrorMessage(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const e = err as { statusMessage?: string; data?: { statusMessage?: string; message?: string }; message?: string }
+    return (
+      e.data?.statusMessage
+      ?? e.data?.message
+      ?? e.statusMessage
+      ?? e.message
+      ?? 'Erreur inconnue'
+    )
+  }
+  return String(err)
+}
 
 export type TradeRecordEntry = TradeRecord // re-export utility

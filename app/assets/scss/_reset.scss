@@ -43,6 +43,18 @@ textarea,
 select {
   font: inherit;
   color: inherit;
+  // Garde-fou anti-overflow : ces éléments ont une largeur intrinsèque
+  // (attribute `size`, longueur des options) qui peut casser les flex/grid
+  // parents. On force le rétrécissement et on empêche le débordement.
+  min-width: 0;
+  max-width: 100%;
+}
+
+input,
+textarea,
+select {
+  // Box-sizing déjà propagé par *, mais les User Agents overridaient parfois.
+  box-sizing: border-box;
 }
 
 button {

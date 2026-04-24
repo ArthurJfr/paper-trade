@@ -1,14 +1,15 @@
 import type { OrderRequest, OrderResult } from '~~/shared/types/portfolio'
 
 /**
- * POST /api/portfolio/orders
+ * POST /api/wallets/:id/orders
  * Body : OrderRequest (pair, side, quantity | notional)
- * Fill market : prix = dernier snapshot Binance (cache 30 s côté market route).
+ * Exécute un ordre market scopé au wallet :id.
  */
 export default defineEventHandler(async (event): Promise<OrderResult> => {
   const config = useRuntimeConfig()
+  const id = getRouterParam(event, 'id')
   const body = await readBody<OrderRequest>(event)
-  return await $fetch<OrderResult>(`${config.backendApiBasePath}/portfolio/orders`, {
+  return await $fetch<OrderResult>(`${config.backendApiBasePath}/wallets/${id}/orders`, {
     method: 'POST',
     baseURL: config.backendApiUrl,
     body,

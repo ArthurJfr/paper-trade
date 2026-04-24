@@ -5,12 +5,14 @@
 export type OrderSide = 'buy' | 'sell'
 
 export interface AccountState {
+  walletId:       number
   cashBalance:    number
   initialBalance: number
   updatedAt:      number // ms epoch
 }
 
 export interface PositionSummary {
+  walletId:  number
   pair:      string
   quantity:  number
   avgCost:   number   // USDC
@@ -19,6 +21,7 @@ export interface PositionSummary {
 
 export interface TradeRecord {
   id:          number
+  walletId:    number
   pair:        string
   side:        OrderSide
   quantity:    number
@@ -30,7 +33,8 @@ export interface TradeRecord {
 }
 
 /**
- * Snapshot complet renvoyé par GET /api/portfolio.
+ * Snapshot complet (legacy / tests). La nouvelle API est GET /api/wallets/:id
+ * qui renvoie un `WalletWithStats` enrichi (voir shared/types/wallet.ts).
  * Valorisation calculée côté serveur à partir du snapshot market.
  */
 export interface PortfolioSnapshot {

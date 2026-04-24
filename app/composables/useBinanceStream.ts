@@ -51,6 +51,9 @@ export function useBinanceStream(opts: UseBinanceStreamOptions) {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let destroyed = false
   let currentPairsKey = ''
+  let lastMessageAt = 0
+  let watchdogTimer: ReturnType<typeof setInterval> | null = null
+  const SILENCE_LIMIT_MS = 45_000
 
   const setStatus = (s: StreamStatus) => {
     status.value = s
@@ -69,6 +72,7 @@ export function useBinanceStream(opts: UseBinanceStreamOptions) {
   }
 
   const handleMessage = (ev: MessageEvent) => {
+    lastMessageAt = Date.now()
     try {
       const msg = JSON.parse(ev.data) as StreamMessage
       const d = msg.data
@@ -130,6 +134,7 @@ export function useBinanceStream(opts: UseBinanceStreamOptions) {
 
     ws.onopen = () => {
       reconnectAttempt = 0
+      lastMessageAt = Date.now()
       setStatus('live')
     }
     ws.onmessage = handleMessage
@@ -139,6 +144,24 @@ export function useBinanceStream(opts: UseBinanceStreamOptions) {
       setStatus('offline')
       scheduleReconnect()
     }
+  }
+
+  const startWatchdog = () => {
+    if (watchdogTimer) return
+    watchdogTimer = setInterval(() => {
+      if (destroyed || !ws || ws.readyState !== WebSocket.OPEN) return
+      if (document.hidden) return
+      const silenceFor = Date.now() - lastMessageAt
+      if (silenceFor > SILENCE_LIMIT_MS) {
+        setStatus('reconnecting')
+        closeSocket()
+        scheduleReconnect()
+      }
+    }, 10_000)
+  }
+
+  const stopWatchdog = () => {
+    if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null }
   }
 
   const maybeReconnectOnPairsChange = () => {
@@ -158,17 +181,22 @@ export function useBinanceStream(opts: UseBinanceStreamOptions) {
     }
   }
 
+  let pollTimer: ReturnType<typeof setInterval> | null = null
+
   onMounted(() => {
     document.addEventListener('visibilitychange', onVisibilityChange)
     connect()
+    startWatchdog()
     // Si les paires arrivent après le mount (hydratation asynchrone du snapshot),
     // on réévalue périodiquement jusqu'à ce qu'on soit connecté au bon set.
-    const poll = setInterval(() => {
-      if (destroyed) return clearInterval(poll)
+    pollTimer = setInterval(() => {
+      if (destroyed) {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+        return
+      }
       if (status.value === 'live' || status.value === 'connecting') return
       maybeReconnectOnPairsChange()
     }, 1000)
-    onBeforeUnmount(() => clearInterval(poll))
   })
 
   onBeforeUnmount(() => {
@@ -176,6 +204,8 @@ export function useBinanceStream(opts: UseBinanceStreamOptions) {
     document.removeEventListener('visibilitychange', onVisibilityChange)
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
     if (flushTimer)     { clearTimeout(flushTimer); flushTimer = null }
+    if (pollTimer)      { clearInterval(pollTimer); pollTimer = null }
+    stopWatchdog()
     closeSocket()
   })
 

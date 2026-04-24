@@ -16,6 +16,13 @@ const API_USER = process.env.API_USER || 'admin'
 const API_PASSWORD = process.env.API_PASSWORD || 'admin'
 const SNAPSHOT_TTL_MS = 30_000
 
+// ─── Contraintes wallet ────────────────────────────────────────────────────
+const MAX_ACTIVE_WALLETS = 20
+const MIN_INITIAL_BALANCE = 100
+const MAX_INITIAL_BALANCE = 10_000_000
+const MAX_NAME_LEN = 60
+const MAX_DESCRIPTION_LEN = 280
+
 const taxonomy = {
   categories: [
     { key: 'layer1', label: 'Layer 1', color: '#f97316' },
@@ -57,17 +64,7 @@ const trackedPairs = new Set(taxonomy.assets.map((a) => a.pair))
 const klineCache = new Map()
 let snapshotMemo = null
 
-async function getOrCreateAccount(client) {
-  const { rows } = await client.query('SELECT * FROM account WHERE id = 1')
-  if (rows.length > 0) return rows[0]
-  const inserted = await client.query(
-    `INSERT INTO account (id, cash_balance, initial_balance, updated_at)
-     VALUES (1, $1, $1, NOW())
-     RETURNING *`,
-    [INITIAL_BALANCE_USDC],
-  )
-  return inserted.rows[0]
-}
+// ─── Helpers market ────────────────────────────────────────────────────────
 
 async function fetchMarketPrice(pair) {
   const symbol = String(pair || '').toUpperCase()
@@ -122,14 +119,180 @@ async function fetchTicker24hSnapshot() {
   return snapshot
 }
 
-app.get('/health', async (_req, res) => {
-  try {
-    await pool.query('SELECT 1')
-    res.status(200).json({ ok: true })
-  } catch (e) {
-    res.status(500).json({ ok: false, message: e.message })
+// ─── Mappers DB → DTO ──────────────────────────────────────────────────────
+
+function mapWalletRow(r) {
+  return {
+    id:             Number(r.id),
+    name:           r.name,
+    description:    r.description ?? null,
+    color:          r.color ?? null,
+    icon:           r.icon ?? null,
+    baseCurrency:   r.base_currency,
+    initialBalance: Number(r.initial_balance),
+    cashBalance:    Number(r.cash_balance),
+    archivedAt:     r.archived_at ? new Date(r.archived_at).getTime() : null,
+    createdAt:      new Date(r.created_at).getTime(),
+    updatedAt:      new Date(r.updated_at).getTime(),
   }
-})
+}
+
+function mapPositionRow(r) {
+  return {
+    walletId:  Number(r.wallet_id),
+    pair:      r.pair,
+    quantity:  Number(r.quantity),
+    avgCost:   Number(r.avg_cost),
+    updatedAt: new Date(r.updated_at).getTime(),
+  }
+}
+
+function mapTradeRow(r) {
+  return {
+    id:          Number(r.id),
+    walletId:    Number(r.wallet_id),
+    pair:        r.pair,
+    side:        r.side === 'sell' ? 'sell' : 'buy',
+    quantity:    Number(r.quantity),
+    price:       Number(r.price),
+    notional:    Number(r.notional),
+    fee:         Number(r.fee),
+    realizedPnl: r.realized_pnl === null ? null : Number(r.realized_pnl),
+    createdAt:   new Date(r.created_at).getTime(),
+  }
+}
+
+function mapAccountFromWallet(wallet) {
+  return {
+    walletId:       wallet.id,
+    cashBalance:    wallet.cashBalance,
+    initialBalance: wallet.initialBalance,
+    updatedAt:      wallet.updatedAt,
+  }
+}
+
+// ─── Helpers wallet ────────────────────────────────────────────────────────
+
+async function getWalletById(client, id) {
+  const { rows } = await client.query('SELECT * FROM wallet WHERE id = $1', [id])
+  return rows[0] ?? null
+}
+
+/**
+ * Crée un wallet par défaut si la table est vide. Appelée au démarrage pour
+ * garantir l'existence d'au moins un wallet utilisable (équivalent runtime
+ * de l'ex `getOrCreateAccount`).
+ */
+async function ensureAtLeastOneWallet() {
+  const { rows } = await pool.query('SELECT id FROM wallet ORDER BY id ASC LIMIT 1')
+  if (rows.length > 0) return Number(rows[0].id)
+  const { rows: inserted } = await pool.query(
+    `INSERT INTO wallet (name, initial_balance, cash_balance)
+     VALUES ('Portefeuille principal', $1, $1)
+     RETURNING id`,
+    [INITIAL_BALANCE_USDC],
+  )
+  return Number(inserted[0].id)
+}
+
+function validateWalletPayload(body, { partial = false } = {}) {
+  const errors = []
+  const { name, initialBalance, description, color, icon, baseCurrency } = body ?? {}
+
+  if (!partial || name !== undefined) {
+    if (typeof name !== 'string' || name.trim().length === 0) errors.push('`name` requis')
+    else if (name.length > MAX_NAME_LEN) errors.push(`\`name\` ≤ ${MAX_NAME_LEN} caractères`)
+  }
+
+  if (!partial || initialBalance !== undefined) {
+    if (!Number.isFinite(Number(initialBalance))
+      || Number(initialBalance) < MIN_INITIAL_BALANCE
+      || Number(initialBalance) > MAX_INITIAL_BALANCE) {
+      errors.push(`\`initialBalance\` entre ${MIN_INITIAL_BALANCE} et ${MAX_INITIAL_BALANCE}`)
+    }
+  }
+
+  if (description !== undefined && description !== null) {
+    if (typeof description !== 'string') errors.push('`description` invalide')
+    else if (description.length > MAX_DESCRIPTION_LEN) errors.push(`\`description\` ≤ ${MAX_DESCRIPTION_LEN} caractères`)
+  }
+  if (color !== undefined && color !== null) {
+    if (typeof color !== 'string' || color.length > 32) errors.push('`color` invalide')
+  }
+  if (icon !== undefined && icon !== null) {
+    if (typeof icon !== 'string' || icon.length > 64) errors.push('`icon` invalide')
+  }
+  if (baseCurrency !== undefined && baseCurrency !== null) {
+    if (typeof baseCurrency !== 'string' || baseCurrency.length > 10) errors.push('`baseCurrency` invalide')
+  }
+
+  return errors
+}
+
+async function computeStatsForWalletIds(walletIds) {
+  const result = new Map()
+  for (const id of walletIds) result.set(Number(id), { invested: 0, positionCount: 0, tradeCount: 0 })
+  if (walletIds.length === 0) return result
+
+  const posAgg = await pool.query(
+    `SELECT wallet_id,
+            COUNT(*)::int                   AS pos_count,
+            COALESCE(SUM(quantity * avg_cost), 0) AS invested
+       FROM position
+      WHERE wallet_id = ANY($1::bigint[])
+      GROUP BY wallet_id`,
+    [walletIds],
+  )
+  for (const r of posAgg.rows) {
+    const cur = result.get(Number(r.wallet_id))
+    if (cur) { cur.invested = Number(r.invested); cur.positionCount = Number(r.pos_count) }
+  }
+
+  const tradesAgg = await pool.query(
+    `SELECT wallet_id, COUNT(*)::int AS trade_count
+       FROM trade
+      WHERE wallet_id = ANY($1::bigint[])
+      GROUP BY wallet_id`,
+    [walletIds],
+  )
+  for (const r of tradesAgg.rows) {
+    const cur = result.get(Number(r.wallet_id))
+    if (cur) cur.tradeCount = Number(r.trade_count)
+  }
+  return result
+}
+
+function enrichWalletWithStats(wallet, stats) {
+  const invested = Number(stats?.invested ?? 0)
+  // NOTE : sans prix live ici, on assume mark = invested (break-even).
+  // Le front calcule la valorisation temps réel via useMarketStore.
+  const mark = invested
+  const equity = Number(wallet.cashBalance) + mark
+  const unrealized = mark - invested
+  const perfPct = wallet.initialBalance > 0
+    ? ((equity - wallet.initialBalance) / wallet.initialBalance) * 100
+    : 0
+  return {
+    ...wallet,
+    equity,
+    invested,
+    unrealized,
+    perfPct,
+    positionCount: stats?.positionCount ?? 0,
+    tradeCount:    stats?.tradeCount    ?? 0,
+  }
+}
+
+async function logWalletEvent(client, walletId, kind, payload = null) {
+  try {
+    await client.query(
+      `INSERT INTO wallet_event (wallet_id, kind, payload) VALUES ($1, $2, $3)`,
+      [walletId, kind, payload ? JSON.stringify(payload) : null],
+    )
+  } catch (_e) { /* table absente = déploiement partiel, on ignore */ }
+}
+
+// ─── Auth middleware ───────────────────────────────────────────────────────
 
 function authIfEnabled(req, res, next) {
   if (!REQUIRE_AUTH) return next()
@@ -146,6 +309,19 @@ function authIfEnabled(req, res, next) {
   }
 }
 
+// ─── Healthcheck ───────────────────────────────────────────────────────────
+
+app.get('/health', async (_req, res) => {
+  try {
+    await pool.query('SELECT 1')
+    res.status(200).json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ ok: false, message: e.message })
+  }
+})
+
+// ─── Router API v1 ─────────────────────────────────────────────────────────
+
 const apiV1 = express.Router()
 
 apiV1.post('/auth/token', (req, res) => {
@@ -157,6 +333,8 @@ apiV1.post('/auth/token', (req, res) => {
   const token = jwt.sign({ sub: username }, JWT_SECRET, { expiresIn: '12h' })
   return res.json({ token, tokenType: 'Bearer', expiresIn: 43200 })
 })
+
+// ─── Market ────────────────────────────────────────────────────────────────
 
 apiV1.get('/market/snapshot', async (_req, res) => {
   try {
@@ -220,45 +398,80 @@ apiV1.get('/market/klines', async (req, res) => {
   }
 })
 
-apiV1.get('/portfolio', authIfEnabled, async (_req, res) => {
+// ─── Wallets CRUD ──────────────────────────────────────────────────────────
+
+apiV1.get('/wallets', authIfEnabled, async (req, res) => {
+  try {
+    const includeArchived = String(req.query.archived ?? 'false') === 'true'
+    const clause = includeArchived ? '' : 'WHERE archived_at IS NULL'
+    const { rows } = await pool.query(`SELECT * FROM wallet ${clause} ORDER BY id ASC`)
+    const wallets = rows.map(mapWalletRow)
+    const stats = await computeStatsForWalletIds(wallets.map((w) => w.id))
+    res.json(wallets.map((w) => enrichWalletWithStats(w, stats.get(w.id))))
+  } catch (e) {
+    res.status(500).json({ statusMessage: e.message || 'Erreur serveur' })
+  }
+})
+
+apiV1.post('/wallets', authIfEnabled, async (req, res) => {
+  const errors = validateWalletPayload(req.body, { partial: false })
+  if (errors.length) return res.status(400).json({ statusMessage: errors.join(' ; ') })
+
   const client = await pool.connect()
   try {
-    const accountRaw = await getOrCreateAccount(client)
-    const positionsRaw = await client.query('SELECT * FROM position ORDER BY pair ASC')
-
-    const positions = positionsRaw.rows.map((p) => ({
-      pair: p.pair,
-      quantity: Number(p.quantity),
-      avgCost: Number(p.avg_cost),
-      updatedAt: new Date(p.updated_at).getTime(),
-    }))
-
-    const account = {
-      cashBalance: Number(accountRaw.cash_balance),
-      initialBalance: Number(accountRaw.initial_balance),
-      updatedAt: new Date(accountRaw.updated_at).getTime(),
+    const { rows: countRows } = await client.query(
+      `SELECT COUNT(*)::int AS n FROM wallet WHERE archived_at IS NULL`,
+    )
+    if (Number(countRows[0].n) >= MAX_ACTIVE_WALLETS) {
+      return res.status(422).json({
+        statusMessage: `Maximum ${MAX_ACTIVE_WALLETS} wallets actifs atteint. Archivez-en un avant d'en créer un nouveau.`,
+      })
     }
 
-    let invested = 0
-    let mark = 0
-    for (const p of positions) {
-      invested += p.quantity * p.avgCost
-      mark += p.quantity * p.avgCost
-    }
+    const { name, description, color, icon, baseCurrency } = req.body
+    const initialBalance = Number(req.body.initialBalance)
 
-    const equity = account.cashBalance + mark
-    const unrealized = mark - invested
-    const perfPct = account.initialBalance > 0
-      ? ((equity - account.initialBalance) / account.initialBalance) * 100
-      : 0
+    const inserted = await client.query(
+      `INSERT INTO wallet (name, description, color, icon, base_currency, initial_balance, cash_balance)
+       VALUES ($1, $2, $3, $4, COALESCE($5, 'USDC'), $6, $6)
+       RETURNING *`,
+      [
+        name.trim(),
+        description ?? null,
+        color ?? null,
+        icon ?? null,
+        baseCurrency ?? null,
+        initialBalance,
+      ],
+    )
+    const wallet = mapWalletRow(inserted.rows[0])
+    await logWalletEvent(client, wallet.id, 'created', { initialBalance })
+    const stats = await computeStatsForWalletIds([wallet.id])
+    res.status(201).json(enrichWalletWithStats(wallet, stats.get(wallet.id)))
+  } catch (e) {
+    res.status(500).json({ statusMessage: e.message || 'Erreur serveur' })
+  } finally {
+    client.release()
+  }
+})
 
+apiV1.get('/wallets/:id', authIfEnabled, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ statusMessage: 'id invalide' })
+  const client = await pool.connect()
+  try {
+    const raw = await getWalletById(client, id)
+    if (!raw) return res.status(404).json({ statusMessage: 'Wallet introuvable' })
+    const wallet = mapWalletRow(raw)
+    const statsMap = await computeStatsForWalletIds([id])
+    const enriched = enrichWalletWithStats(wallet, statsMap.get(id))
+    const { rows: positionsRaw } = await client.query(
+      'SELECT * FROM position WHERE wallet_id = $1 ORDER BY pair ASC',
+      [id],
+    )
     res.json({
-      account,
-      positions,
-      equity,
-      invested,
-      unrealized,
-      perfPct,
+      ...enriched,
+      positions: positionsRaw.map(mapPositionRow),
     })
   } catch (e) {
     res.status(500).json({ statusMessage: e.message || 'Erreur serveur' })
@@ -267,69 +480,220 @@ apiV1.get('/portfolio', authIfEnabled, async (_req, res) => {
   }
 })
 
-apiV1.get('/portfolio/trades', authIfEnabled, async (req, res) => {
+apiV1.patch('/wallets/:id', authIfEnabled, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ statusMessage: 'id invalide' })
+
+  const errors = validateWalletPayload(req.body, { partial: true })
+  if (errors.length) return res.status(400).json({ statusMessage: errors.join(' ; ') })
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const current = await getWalletById(client, id)
+    if (!current) { await client.query('ROLLBACK'); return res.status(404).json({ statusMessage: 'Wallet introuvable' }) }
+
+    const body = req.body ?? {}
+    const patch = {}
+    if (body.name !== undefined) patch.name = String(body.name).trim()
+    if (body.description !== undefined) patch.description = body.description ?? null
+    if (body.color !== undefined) patch.color = body.color ?? null
+    if (body.icon !== undefined) patch.icon = body.icon ?? null
+
+    if (body.initialBalance !== undefined) {
+      const ib = Number(body.initialBalance)
+      const { rows: countRows } = await client.query(
+        'SELECT COUNT(*)::int AS n FROM trade WHERE wallet_id = $1',
+        [id],
+      )
+      if (Number(countRows[0].n) > 0 && ib !== Number(current.initial_balance)) {
+        await client.query('ROLLBACK')
+        return res.status(422).json({
+          statusMessage: 'Capital initial verrouillé après le premier trade. Utilisez "Reset" pour repartir à zéro.',
+        })
+      }
+      patch.initial_balance = ib
+      // Si pas encore de trade ET pas encore de position, on peut aussi recaler le cash.
+      const { rows: posRows } = await client.query(
+        'SELECT COUNT(*)::int AS n FROM position WHERE wallet_id = $1',
+        [id],
+      )
+      if (Number(posRows[0].n) === 0) patch.cash_balance = ib
+    }
+
+    const setParts = []
+    const values = []
+    for (const [col, val] of Object.entries(patch)) {
+      values.push(val)
+      setParts.push(`${col} = $${values.length}`)
+    }
+    if (setParts.length === 0) {
+      await client.query('ROLLBACK')
+      const wallet = mapWalletRow(current)
+      const statsMap = await computeStatsForWalletIds([id])
+      return res.json(enrichWalletWithStats(wallet, statsMap.get(id)))
+    }
+    setParts.push(`updated_at = NOW()`)
+    values.push(id)
+    const updated = await client.query(
+      `UPDATE wallet SET ${setParts.join(', ')} WHERE id = $${values.length} RETURNING *`,
+      values,
+    )
+    await logWalletEvent(client, id, 'updated', patch)
+    await client.query('COMMIT')
+
+    const wallet = mapWalletRow(updated.rows[0])
+    const statsMap = await computeStatsForWalletIds([id])
+    res.json(enrichWalletWithStats(wallet, statsMap.get(id)))
+  } catch (e) {
+    await client.query('ROLLBACK')
+    res.status(500).json({ statusMessage: e.message || 'Erreur serveur' })
+  } finally {
+    client.release()
+  }
+})
+
+apiV1.delete('/wallets/:id', authIfEnabled, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ statusMessage: 'id invalide' })
+  const hard = String(req.query.hard ?? 'false') === 'true'
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const current = await getWalletById(client, id)
+    if (!current) { await client.query('ROLLBACK'); return res.status(404).json({ statusMessage: 'Wallet introuvable' }) }
+
+    if (hard) {
+      // CASCADE sur position + trade via FK ON DELETE CASCADE.
+      await logWalletEvent(client, id, 'hard_deleted', { name: current.name })
+      await client.query('DELETE FROM wallet WHERE id = $1', [id])
+    } else {
+      if (current.archived_at) {
+        await client.query('ROLLBACK')
+        return res.status(422).json({ statusMessage: 'Wallet déjà archivé' })
+      }
+      await client.query(
+        'UPDATE wallet SET archived_at = NOW(), updated_at = NOW() WHERE id = $1',
+        [id],
+      )
+      await logWalletEvent(client, id, 'archived', null)
+    }
+
+    await client.query('COMMIT')
+    res.json({ ok: true, id, hardDeleted: hard })
+  } catch (e) {
+    await client.query('ROLLBACK')
+    res.status(500).json({ statusMessage: e.message || 'Erreur serveur' })
+  } finally {
+    client.release()
+  }
+})
+
+apiV1.post('/wallets/:id/restore', authIfEnabled, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ statusMessage: 'id invalide' })
+  const client = await pool.connect()
+  try {
+    const current = await getWalletById(client, id)
+    if (!current) return res.status(404).json({ statusMessage: 'Wallet introuvable' })
+    if (!current.archived_at) return res.status(422).json({ statusMessage: 'Wallet non archivé' })
+
+    const { rows: countRows } = await client.query(
+      'SELECT COUNT(*)::int AS n FROM wallet WHERE archived_at IS NULL',
+    )
+    if (Number(countRows[0].n) >= MAX_ACTIVE_WALLETS) {
+      return res.status(422).json({
+        statusMessage: `Maximum ${MAX_ACTIVE_WALLETS} wallets actifs atteint.`,
+      })
+    }
+
+    const updated = await client.query(
+      `UPDATE wallet SET archived_at = NULL, updated_at = NOW() WHERE id = $1 RETURNING *`,
+      [id],
+    )
+    await logWalletEvent(client, id, 'restored', null)
+    const wallet = mapWalletRow(updated.rows[0])
+    const statsMap = await computeStatsForWalletIds([id])
+    res.json(enrichWalletWithStats(wallet, statsMap.get(id)))
+  } catch (e) {
+    res.status(500).json({ statusMessage: e.message || 'Erreur serveur' })
+  } finally {
+    client.release()
+  }
+})
+
+// ─── Positions / Trades scopés ─────────────────────────────────────────────
+
+apiV1.get('/wallets/:id/positions', authIfEnabled, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ statusMessage: 'id invalide' })
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM position WHERE wallet_id = $1 ORDER BY pair ASC',
+      [id],
+    )
+    res.json(rows.map(mapPositionRow))
+  } catch (e) {
+    res.status(500).json({ statusMessage: e.message || 'Erreur serveur' })
+  }
+})
+
+apiV1.get('/wallets/:id/trades', authIfEnabled, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ statusMessage: 'id invalide' })
+
   const pair = typeof req.query.pair === 'string' ? req.query.pair.toUpperCase() : null
   const limit = Math.min(500, Math.max(1, Number(req.query.limit ?? 50)))
   const cursor = Number(req.query.cursor || 0)
 
-  const params = []
-  const clauses = []
-  if (pair) {
-    params.push(pair)
-    clauses.push(`pair = $${params.length}`)
-  }
-  if (cursor > 0) {
-    params.push(cursor)
-    clauses.push(`id < $${params.length}`)
-  }
+  const params = [id]
+  const clauses = ['wallet_id = $1']
+  if (pair) { params.push(pair); clauses.push(`pair = $${params.length}`) }
+  if (cursor > 0) { params.push(cursor); clauses.push(`id < $${params.length}`) }
   params.push(limit)
 
-  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
   const query = `
-    SELECT id, pair, side, quantity, price, notional, fee, realized_pnl, created_at
+    SELECT id, wallet_id, pair, side, quantity, price, notional, fee, realized_pnl, created_at
     FROM trade
-    ${where}
+    WHERE ${clauses.join(' AND ')}
     ORDER BY created_at DESC, id DESC
     LIMIT $${params.length}
   `
 
   try {
     const { rows } = await pool.query(query, params)
-    res.json(rows.map((t) => ({
-      id: Number(t.id),
-      pair: t.pair,
-      side: t.side === 'sell' ? 'sell' : 'buy',
-      quantity: Number(t.quantity),
-      price: Number(t.price),
-      notional: Number(t.notional),
-      fee: Number(t.fee),
-      realizedPnl: t.realized_pnl === null ? null : Number(t.realized_pnl),
-      createdAt: new Date(t.created_at).getTime(),
-    })))
+    res.json(rows.map(mapTradeRow))
   } catch (e) {
     res.status(500).json({ statusMessage: e.message || 'Erreur serveur' })
   }
 })
 
-apiV1.post('/portfolio/orders', authIfEnabled, async (req, res) => {
-  const body = req.body ?? {}
-  const pair = String(body.pair ?? '').toUpperCase()
-  const side = body.side
-  const quantityInput = Number(body.quantity ?? 0)
-  const notionalInput = Number(body.notional ?? 0)
+// ─── Orders (place un trade market) ────────────────────────────────────────
+
+async function placeOrderForWallet(walletId, body) {
+  const pair = String(body?.pair ?? '').toUpperCase()
+  const side = body?.side
+  const quantityInput = Number(body?.quantity ?? 0)
+  const notionalInput = Number(body?.notional ?? 0)
   const hasQty = Number.isFinite(quantityInput) && quantityInput > 0
   const hasNotional = Number.isFinite(notionalInput) && notionalInput > 0
 
-  if (!pair) return res.status(400).json({ statusMessage: '`pair` requise' })
-  if (side !== 'buy' && side !== 'sell') return res.status(400).json({ statusMessage: '`side` doit être "buy" ou "sell"' })
-  if (hasQty === hasNotional) return res.status(400).json({ statusMessage: 'Fournir exactement `quantity` OU `notional`' })
+  if (!pair) throw httpError(400, '`pair` requise')
+  if (side !== 'buy' && side !== 'sell') throw httpError(400, '`side` doit être "buy" ou "sell"')
+  if (hasQty === hasNotional) throw httpError(400, 'Fournir exactement `quantity` OU `notional`')
 
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
+    const walletRaw = await getWalletById(client, walletId)
+    if (!walletRaw) { await client.query('ROLLBACK'); throw httpError(404, 'Wallet introuvable') }
+    if (walletRaw.archived_at) { await client.query('ROLLBACK'); throw httpError(422, 'Wallet archivé — trades bloqués') }
 
-    const account = await getOrCreateAccount(client)
-    const currentPositionResult = await client.query('SELECT * FROM position WHERE pair = $1', [pair])
+    const currentPositionResult = await client.query(
+      'SELECT * FROM position WHERE wallet_id = $1 AND pair = $2',
+      [walletId, pair],
+    )
     const current = currentPositionResult.rows[0] ?? null
 
     const price = await fetchMarketPrice(pair)
@@ -339,70 +703,54 @@ apiV1.post('/portfolio/orders', authIfEnabled, async (req, res) => {
 
     if (side === 'buy') {
       const totalCost = notional + fee
-      if (Number(account.cash_balance) < totalCost - 1e-9) {
+      if (Number(walletRaw.cash_balance) < totalCost - 1e-9) {
         await client.query('ROLLBACK')
-        return res.status(422).json({ statusMessage: 'Cash insuffisant' })
+        throw httpError(422, 'Cash insuffisant')
       }
-
       const prevQty = Number(current?.quantity ?? 0)
       const prevAvg = Number(current?.avg_cost ?? 0)
       const newQty = prevQty + quantity
       const newAvg = newQty > 0 ? ((prevQty * prevAvg + quantity * price) / newQty) : price
 
       await client.query(
-        'UPDATE account SET cash_balance = $1, updated_at = NOW() WHERE id = 1',
-        [Number(account.cash_balance) - totalCost],
+        'UPDATE wallet SET cash_balance = $1, updated_at = NOW() WHERE id = $2',
+        [Number(walletRaw.cash_balance) - totalCost, walletId],
       )
       await client.query(
-        `INSERT INTO position (pair, quantity, avg_cost, updated_at)
-         VALUES ($1, $2, $3, NOW())
-         ON CONFLICT (pair)
+        `INSERT INTO position (wallet_id, pair, quantity, avg_cost, updated_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (wallet_id, pair)
          DO UPDATE SET quantity = EXCLUDED.quantity, avg_cost = EXCLUDED.avg_cost, updated_at = NOW()`,
-        [pair, newQty, newAvg],
+        [walletId, pair, newQty, newAvg],
       )
 
       const tradeInsert = await client.query(
-        `INSERT INTO trade (pair, side, quantity, price, notional, fee, realized_pnl)
-         VALUES ($1, 'buy', $2, $3, $4, $5, NULL)
+        `INSERT INTO trade (wallet_id, pair, side, quantity, price, notional, fee, realized_pnl)
+         VALUES ($1, $2, 'buy', $3, $4, $5, $6, NULL)
          RETURNING *`,
-        [pair, quantity, price, notional, fee],
+        [walletId, pair, quantity, price, notional, fee],
       )
 
       await client.query('COMMIT')
-      const trade = tradeInsert.rows[0]
-      const updatedAccount = await pool.query('SELECT * FROM account WHERE id = 1')
-      const updatedPosition = await pool.query('SELECT * FROM position WHERE pair = $1', [pair])
-
-      return res.json({
-        trade: {
-          id: Number(trade.id),
-          pair: trade.pair,
-          side: 'buy',
-          quantity: Number(trade.quantity),
-          price: Number(trade.price),
-          notional: Number(trade.notional),
-          fee: Number(trade.fee),
-          realizedPnl: null,
-          createdAt: new Date(trade.created_at).getTime(),
-        },
-        account: {
-          cashBalance: Number(updatedAccount.rows[0].cash_balance),
-          initialBalance: Number(updatedAccount.rows[0].initial_balance),
-          updatedAt: new Date(updatedAccount.rows[0].updated_at).getTime(),
-        },
-        position: {
-          pair: updatedPosition.rows[0].pair,
-          quantity: Number(updatedPosition.rows[0].quantity),
-          avgCost: Number(updatedPosition.rows[0].avg_cost),
-          updatedAt: new Date(updatedPosition.rows[0].updated_at).getTime(),
-        },
-      })
+      const trade = mapTradeRow(tradeInsert.rows[0])
+      const updatedWallet = mapWalletRow((await pool.query('SELECT * FROM wallet WHERE id = $1', [walletId])).rows[0])
+      const updatedPosition = (await pool.query(
+        'SELECT * FROM position WHERE wallet_id = $1 AND pair = $2',
+        [walletId, pair],
+      )).rows[0]
+      return {
+        trade,
+        account:  mapAccountFromWallet(updatedWallet),
+        position: updatedPosition ? mapPositionRow(updatedPosition) : null,
+        wallet:   updatedWallet,
+      }
     }
 
+    // SELL
     const available = Number(current?.quantity ?? 0)
     if (available < quantity - 1e-12) {
       await client.query('ROLLBACK')
-      return res.status(422).json({ statusMessage: 'Position insuffisante' })
+      throw httpError(422, 'Position insuffisante')
     }
 
     const proceeds = notional - fee
@@ -411,59 +759,144 @@ apiV1.post('/portfolio/orders', authIfEnabled, async (req, res) => {
     const remaining = available - quantity
 
     await client.query(
-      'UPDATE account SET cash_balance = $1, updated_at = NOW() WHERE id = 1',
-      [Number(account.cash_balance) + proceeds],
+      'UPDATE wallet SET cash_balance = $1, updated_at = NOW() WHERE id = $2',
+      [Number(walletRaw.cash_balance) + proceeds, walletId],
     )
 
     if (remaining <= 1e-12) {
-      await client.query('DELETE FROM position WHERE pair = $1', [pair])
+      await client.query('DELETE FROM position WHERE wallet_id = $1 AND pair = $2', [walletId, pair])
     } else {
       await client.query(
-        'UPDATE position SET quantity = $1, updated_at = NOW() WHERE pair = $2',
-        [remaining, pair],
+        'UPDATE position SET quantity = $1, updated_at = NOW() WHERE wallet_id = $2 AND pair = $3',
+        [remaining, walletId, pair],
       )
     }
 
     const tradeInsert = await client.query(
-      `INSERT INTO trade (pair, side, quantity, price, notional, fee, realized_pnl)
-       VALUES ($1, 'sell', $2, $3, $4, $5, $6)
+      `INSERT INTO trade (wallet_id, pair, side, quantity, price, notional, fee, realized_pnl)
+       VALUES ($1, $2, 'sell', $3, $4, $5, $6, $7)
        RETURNING *`,
-      [pair, quantity, price, notional, fee, realizedPnl],
+      [walletId, pair, quantity, price, notional, fee, realizedPnl],
     )
 
     await client.query('COMMIT')
-    const trade = tradeInsert.rows[0]
-    const updatedAccount = await pool.query('SELECT * FROM account WHERE id = 1')
-    const updatedPosition = remaining <= 1e-12
+    const trade = mapTradeRow(tradeInsert.rows[0])
+    const updatedWallet = mapWalletRow((await pool.query('SELECT * FROM wallet WHERE id = $1', [walletId])).rows[0])
+    const updatedPositionRow = remaining <= 1e-12
       ? null
-      : (await pool.query('SELECT * FROM position WHERE pair = $1', [pair])).rows[0]
-
-    return res.json({
-      trade: {
-        id: Number(trade.id),
-        pair: trade.pair,
-        side: 'sell',
-        quantity: Number(trade.quantity),
-        price: Number(trade.price),
-        notional: Number(trade.notional),
-        fee: Number(trade.fee),
-        realizedPnl: trade.realized_pnl === null ? null : Number(trade.realized_pnl),
-        createdAt: new Date(trade.created_at).getTime(),
-      },
-      account: {
-        cashBalance: Number(updatedAccount.rows[0].cash_balance),
-        initialBalance: Number(updatedAccount.rows[0].initial_balance),
-        updatedAt: new Date(updatedAccount.rows[0].updated_at).getTime(),
-      },
-      position: updatedPosition ? {
-        pair: updatedPosition.pair,
-        quantity: Number(updatedPosition.quantity),
-        avgCost: Number(updatedPosition.avg_cost),
-        updatedAt: new Date(updatedPosition.updated_at).getTime(),
-      } : null,
-    })
+      : (await pool.query(
+        'SELECT * FROM position WHERE wallet_id = $1 AND pair = $2',
+        [walletId, pair],
+      )).rows[0]
+    return {
+      trade,
+      account:  mapAccountFromWallet(updatedWallet),
+      position: updatedPositionRow ? mapPositionRow(updatedPositionRow) : null,
+      wallet:   updatedWallet,
+    }
   } catch (e) {
-    await client.query('ROLLBACK')
+    try { await client.query('ROLLBACK') } catch (_r) { /* noop */ }
+    throw e
+  } finally {
+    client.release()
+  }
+}
+
+function httpError(status, message) {
+  const err = new Error(message)
+  err.status = status
+  return err
+}
+
+apiV1.post('/wallets/:id/orders', authIfEnabled, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ statusMessage: 'id invalide' })
+  try {
+    const result = await placeOrderForWallet(id, req.body)
+    res.json(result)
+  } catch (e) {
+    const status = e?.status ?? 500
+    res.status(status).json({ statusMessage: e.message || 'Erreur serveur' })
+  }
+})
+
+// ─── Reset & duplicate ─────────────────────────────────────────────────────
+
+apiV1.post('/wallets/:id/reset', authIfEnabled, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ statusMessage: 'id invalide' })
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const current = await getWalletById(client, id)
+    if (!current) { await client.query('ROLLBACK'); return res.status(404).json({ statusMessage: 'Wallet introuvable' }) }
+    if (current.archived_at) { await client.query('ROLLBACK'); return res.status(422).json({ statusMessage: 'Wallet archivé — restaurez-le avant de le reset' }) }
+
+    await client.query('DELETE FROM position WHERE wallet_id = $1', [id])
+    await client.query('DELETE FROM trade WHERE wallet_id = $1', [id])
+    const updated = await client.query(
+      `UPDATE wallet SET cash_balance = initial_balance, updated_at = NOW() WHERE id = $1 RETURNING *`,
+      [id],
+    )
+    await logWalletEvent(client, id, 'reset', { cashBalance: Number(current.initial_balance) })
+    await client.query('COMMIT')
+
+    const wallet = mapWalletRow(updated.rows[0])
+    const statsMap = await computeStatsForWalletIds([id])
+    res.json(enrichWalletWithStats(wallet, statsMap.get(id)))
+  } catch (e) {
+    try { await client.query('ROLLBACK') } catch (_r) { /* noop */ }
+    res.status(500).json({ statusMessage: e.message || 'Erreur serveur' })
+  } finally {
+    client.release()
+  }
+})
+
+apiV1.post('/wallets/:id/duplicate', authIfEnabled, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ statusMessage: 'id invalide' })
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const current = await getWalletById(client, id)
+    if (!current) { await client.query('ROLLBACK'); return res.status(404).json({ statusMessage: 'Wallet introuvable' }) }
+
+    const { rows: countRows } = await client.query(
+      `SELECT COUNT(*)::int AS n FROM wallet WHERE archived_at IS NULL`,
+    )
+    if (Number(countRows[0].n) >= MAX_ACTIVE_WALLETS) {
+      await client.query('ROLLBACK')
+      return res.status(422).json({ statusMessage: `Maximum ${MAX_ACTIVE_WALLETS} wallets actifs atteint.` })
+    }
+
+    const overrideName = typeof req.body?.name === 'string' ? req.body.name.trim() : null
+    const baseName = overrideName && overrideName.length > 0
+      ? overrideName
+      : `${current.name} (copie)`
+    const finalName = baseName.slice(0, MAX_NAME_LEN)
+
+    const initialBalance = Number.isFinite(Number(req.body?.initialBalance))
+      ? Number(req.body.initialBalance)
+      : Number(current.initial_balance)
+    if (initialBalance < MIN_INITIAL_BALANCE || initialBalance > MAX_INITIAL_BALANCE) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ statusMessage: `\`initialBalance\` entre ${MIN_INITIAL_BALANCE} et ${MAX_INITIAL_BALANCE}` })
+    }
+
+    const inserted = await client.query(
+      `INSERT INTO wallet (name, description, color, icon, base_currency, initial_balance, cash_balance)
+       VALUES ($1, $2, $3, $4, $5, $6, $6)
+       RETURNING *`,
+      [finalName, current.description, current.color, current.icon, current.base_currency, initialBalance],
+    )
+    const wallet = mapWalletRow(inserted.rows[0])
+    await logWalletEvent(client, wallet.id, 'duplicated_from', { sourceId: id, initialBalance })
+    await client.query('COMMIT')
+
+    const statsMap = await computeStatsForWalletIds([wallet.id])
+    res.status(201).json(enrichWalletWithStats(wallet, statsMap.get(wallet.id)))
+  } catch (e) {
+    try { await client.query('ROLLBACK') } catch (_r) { /* noop */ }
     res.status(500).json({ statusMessage: e.message || 'Erreur serveur' })
   } finally {
     client.release()
@@ -474,6 +907,7 @@ app.use('/api/v1', apiV1)
 app.use('/api', apiV1)
 
 await initDb()
+await ensureAtLeastOneWallet()
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[paper-trade-api] listening on 0.0.0.0:${PORT}`)

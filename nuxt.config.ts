@@ -50,6 +50,8 @@ export default defineNuxtConfig({
   },
 
   app: {
+    pageTransition: { name: 'pt-page', mode: 'out-in' },
+    layoutTransition: { name: 'pt-page', mode: 'out-in' },
     head: {
       title: 'Paper-Trade — Visualisation crypto & paper trading',
       htmlAttrs: { lang: 'fr' },

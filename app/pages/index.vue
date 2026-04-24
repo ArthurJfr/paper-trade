@@ -23,25 +23,25 @@ const stats = computed(() => {
     {
       label: 'Valeur portefeuille',
       value: '$10 000.00',
-      change: 'Paper trading · v0.2',
+      hint: 'Paper trading · v0.2',
       trend: 'flat' as Trend,
     },
     {
       label: 'Volume 24 h suivi',
       value: store.isLoaded ? fmtVolume(store.totalVolume24h) : '—',
-      change: `${Object.keys(store.tickers).length} actifs trackés`,
+      hint: `${Object.keys(store.tickers).length} actifs trackés`,
       trend: 'flat' as Trend,
     },
     {
       label: 'Bitcoin',
       value: btc ? `$${fmtPrice(btc.price)}` : '—',
-      change: btc ? fmtPerf(btc.change) + ' sur 24 h' : 'Chargement…',
-      trend: btc ? trendOf(btc.change) : 'flat',
+      hint: btc ? `${fmtPerf(btc.change)} sur 24 h` : 'Chargement…',
+      trend: btc ? trendOf(btc.change) : 'flat' as Trend,
     },
     {
       label: 'Marché global',
       value: store.isLoaded ? fmtPerf(avg) : '—',
-      change: 'Moyenne des catégories',
+      hint: 'Moyenne des catégories',
       trend: trendOf(avg),
     },
   ]
@@ -50,42 +50,35 @@ const stats = computed(() => {
 
 <template>
   <section class="dash">
-    <header class="head">
-      <div>
-        <h1>Dashboard</h1>
-        <p class="sub">Aperçu du marché · classification par thèses · portefeuille simulé</p>
-      </div>
-      <span class="chip" :data-status="store.streamStatus">
-        <span class="dot" />
-        <span>{{
-          store.streamStatus === 'live'         ? 'Live · Binance WS'
-          : store.streamStatus === 'connecting' ? 'Connexion…'
-          : store.streamStatus === 'reconnecting' ? 'Reconnexion…'
-          : store.streamStatus === 'offline'    ? 'Déconnecté'
-          : store.source === 'binance'          ? 'Snapshot · Binance REST'
-          : 'Hors-ligne · données absentes'
-        }}</span>
-      </span>
-      <span class="freshness" :data-freshness="marketFreshness">
-        {{ marketAgeSec === null ? 'Données absentes' : `MAJ il y a ${marketAgeSec}s` }}
-      </span>
-      <span class="meta">
-        {{ store.transportMode.toUpperCase() }} ·
-        {{ marketLatency === null ? 'latence —' : `${marketLatency}ms` }} ·
-        switch {{ store.fallbackSwitchCount }}{{ lastSwitchSec === null ? '' : ` (il y a ${lastSwitchSec}s)` }}
-      </span>
-    </header>
+    <PageHeader
+      kicker="Vue d'ensemble"
+      title="Dashboard"
+      subtitle="Aperçu du marché · classification par thèses · portefeuille simulé"
+    >
+      <template #meta>
+        <MarketStatusBadge :status="store.streamStatus" :source="store.source" />
+        <FreshnessBadge :age-sec="marketAgeSec" :freshness="marketFreshness" />
+        <MarketMeta
+          :transport-mode="store.transportMode"
+          :latency-ms="marketLatency"
+          :switch-count="store.fallbackSwitchCount"
+          :last-switch-sec="lastSwitchSec"
+        />
+      </template>
+    </PageHeader>
 
-    <!-- Stats -->
     <div class="stats">
-      <article v-for="s in stats" :key="s.label" class="stat">
-        <span class="label">{{ s.label }}</span>
-        <strong class="value">{{ s.value }}</strong>
-        <span class="change" :data-trend="s.trend">{{ s.change }}</span>
-      </article>
+      <UiStatCard
+        v-for="s in stats"
+        :key="s.label"
+        :label="s.label"
+        :value="s.value"
+        :hint="s.hint"
+        :trend="s.trend"
+        :loading="!store.isLoaded && s.label !== 'Valeur portefeuille'"
+      />
     </div>
 
-    <!-- Catégories -->
     <section class="block">
       <div class="block-head">
         <div>
@@ -114,7 +107,6 @@ const stats = computed(() => {
       </div>
     </section>
 
-    <!-- Top movers -->
     <section class="block">
       <div class="block-head">
         <div>
@@ -126,137 +118,51 @@ const stats = computed(() => {
 
       <ul v-if="store.topMovers.length" class="movers">
         <li v-for="m in store.topMovers" :key="m.asset.pair">
-          <span
-            class="cat-dot"
-            :style="{ '--cat-color': store.categoryByKey.get(m.asset.category)?.color }"
-            aria-hidden="true"
-          />
-          <span class="sym">{{ m.asset.symbol }}</span>
-          <span class="name">{{ m.asset.name }}</span>
-          <span class="price">${{ fmtPrice(m.ticker.price) }}</span>
-          <strong class="perf" :data-trend="trendOf(m.ticker.changePct)">
-            {{ fmtPerf(m.ticker.changePct) }}
-          </strong>
+          <NuxtLink :to="`/token/${m.asset.pair}`" class="mover-link">
+            <span
+              class="cat-dot"
+              :style="{ '--cat-color': store.categoryByKey.get(m.asset.category)?.color }"
+              aria-hidden="true"
+            />
+            <span class="sym">{{ m.asset.symbol }}</span>
+            <span class="name">{{ m.asset.name }}</span>
+            <span class="price">${{ fmtPrice(m.ticker.price) }}</span>
+            <strong class="perf" :data-trend="trendOf(m.ticker.changePct)">
+              {{ fmtPerf(m.ticker.changePct) }}
+            </strong>
+          </NuxtLink>
         </li>
       </ul>
-      <div v-else class="empty">
-        <Icon name="ph:cloud-slash-bold" size="20" />
-        <p>Pas encore de données — le snapshot arrive.</p>
-      </div>
+      <UiEmptyState
+        v-else
+        icon="ph:cloud-slash-bold"
+        title="Données en cours d'arrivée"
+        description="Le snapshot initial est en train de se charger."
+      />
     </section>
   </section>
 </template>
 
 <style lang="scss" scoped>
-.dash {
-  @include stack($space-xl);
-}
+.dash { @include stack($space-xl); }
 
-// ─── Head ────────────────────────────────────────────────────────────────
-.head {
-  @include flex-between;
-  align-items: flex-end;
-  gap: $space-md;
-  flex-wrap: wrap;
-
-  h1 {
-    font-size: $fs-3xl;
-    letter-spacing: -0.02em;
-  }
-
-  .sub {
-    color: $color-text-muted;
-    font-size: $fs-sm;
-    margin-top: $space-xs;
-  }
-}
-
-.freshness {
-  font-size: $fs-xs;
-  font-family: $font-mono;
-  color: $color-text-muted;
-  &[data-freshness='fresh'] { color: $color-accent; }
-  &[data-freshness='delayed'] { color: $color-warning; }
-  &[data-freshness='stale'] { color: $color-danger; }
-}
-
-.meta {
-  font-size: $fs-xs;
-  color: $color-text-dim;
-  font-family: $font-mono;
-}
-
-.chip {
-  @include row($space-sm);
-  padding: $space-xs $space-md;
-  border: 1px solid $color-border;
-  border-radius: $radius-full;
-  font-size: $fs-xs;
-  color: $color-text-muted;
-  background: $color-surface;
-
-  .dot {
-    width: 6px;
-    height: 6px;
-    border-radius: $radius-full;
-    background: $color-text-dim;
-    box-shadow: 0 0 0 4px var(--chip-dot-shadow);
-  }
-
-  &[data-status='live'] .dot {
-    background: $color-accent;
-    box-shadow: 0 0 0 4px $color-accent-soft;
-    animation: pulse 2s ease-in-out infinite;
-  }
-  &[data-status='connecting'] .dot,
-  &[data-status='reconnecting'] .dot {
-    background: $color-warning;
-    box-shadow: 0 0 0 4px $color-warning-soft;
-  }
-  &[data-status='offline'] .dot {
-    background: $color-danger;
-    box-shadow: 0 0 0 4px $color-danger-soft;
-  }
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.55; }
-}
-
-// ─── Stats ───────────────────────────────────────────────────────────────
 .stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: $space-md;
+
+  @include media-down($bp-sm) {
+    grid-template-columns: repeat(2, 1fr);
+    gap: $space-sm;
+  }
+
+  > * {
+    @include anim-slide-up($duration-base, $ease-decelerate);
+  }
+
+  @include stagger-children(8, 70ms);
 }
 
-.stat {
-  @include card;
-  @include stack($space-xs);
-  transition: border-color $transition-fast;
-
-  &:hover { border-color: $color-border-hover; }
-
-  .label {
-    font-size: $fs-xs;
-    color: $color-text-muted;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  .value {
-    font-size: $fs-2xl;
-    @include mono-nums;
-  }
-  .change {
-    font-size: $fs-xs;
-    color: $color-text-muted;
-    &[data-trend='up']   { color: $color-accent; }
-    &[data-trend='down'] { color: $color-danger; }
-  }
-}
-
-// ─── Blocks ──────────────────────────────────────────────────────────────
 .block      { @include stack($space-md); }
 .block-head {
   @include flex-between;
@@ -264,7 +170,7 @@ const stats = computed(() => {
   flex-wrap: wrap;
 
   h2   { font-size: $fs-xl; font-weight: $fw-semibold; }
-  .sub { color: $color-text-muted; font-size: $fs-xs; margin-top: $space-xs; }
+  .sub { color: var(--text-secondary); font-size: $fs-xs; margin-top: $space-xs; }
   .link {
     @include row($space-xs);
     color: $color-accent;
@@ -272,10 +178,9 @@ const stats = computed(() => {
     font-weight: $fw-medium;
     &:hover { text-decoration: underline; }
   }
-  .dim { color: $color-text-dim; font-size: $fs-xs; font-family: $font-mono; }
+  .dim { color: var(--text-tertiary); font-size: $fs-xs; font-family: $font-mono; }
 }
 
-// ─── Catégories ──────────────────────────────────────────────────────────
 .cats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -284,9 +189,10 @@ const stats = computed(() => {
 
 .cat {
   @include stack($space-xs);
-  @include card;
+  @include panel-padded;
   position: relative;
   overflow: hidden;
+  min-width: 0;
   transition: border-color $transition-fast, transform $transition-fast;
 
   &::before {
@@ -301,32 +207,47 @@ const stats = computed(() => {
     transform: translateY(-2px);
   }
 
-  .cat-label { font-size: $fs-sm; color: $color-text-muted; }
+  .cat-label { font-size: $fs-sm; color: var(--text-secondary); @include truncate; }
   .cat-perf {
     font-size: $fs-xl;
     @include mono-nums;
+    @include truncate;
     &[data-trend='up']   { color: $color-accent; }
     &[data-trend='down'] { color: $color-danger; }
-    &[data-trend='flat'] { color: $color-text-muted; }
+    &[data-trend='flat'] { color: var(--text-secondary); }
   }
-  .cat-count { font-size: $fs-xs; color: $color-text-dim; }
+  .cat-count { font-size: $fs-xs; color: var(--text-tertiary); }
 }
 
-// ─── Movers ──────────────────────────────────────────────────────────────
 .movers {
-  @include card;
+  @include panel;
   padding: 0;
+  overflow: hidden;
+  @include stagger-children(12, 40ms);
 
   li {
+    border-bottom: 1px solid $color-border;
+    @include anim-fade-in($duration-fast, $ease-decelerate);
+    &:last-child { border-bottom: 0; }
+  }
+
+  .mover-link {
     display: grid;
-    grid-template-columns: 12px 72px 1fr auto auto;
+    grid-template-columns: 12px 72px minmax(0, 1fr) auto auto;
     align-items: center;
     gap: $space-md;
     padding: $space-md $space-lg;
-    border-bottom: 1px solid $color-border;
+    color: inherit;
+    transition:
+      background $duration-fast $ease-standard,
+      padding-left $duration-fast $ease-standard;
+    min-width: 0;
 
-    &:last-child { border-bottom: 0; }
-    &:hover      { background: $color-surface-2; }
+    &:hover {
+      background: $color-surface-2;
+      padding-left: calc(#{$space-lg} + 4px);
+    }
+    &:focus-visible { @include ring-inset; background: $color-surface-2; }
 
     .cat-dot {
       width: 8px;
@@ -335,10 +256,10 @@ const stats = computed(() => {
       background: var(--cat-color, #{$color-text-dim});
     }
     .sym  { font-weight: $fw-semibold; @include mono-nums; }
-    .name { color: $color-text-muted; font-size: $fs-sm; @include truncate; }
+    .name { color: var(--text-secondary); font-size: $fs-sm; @include truncate; min-width: 0; }
     .price {
       @include mono-nums;
-      color: $color-text-muted;
+      color: var(--text-secondary);
       font-size: $fs-sm;
     }
     .perf {
@@ -352,12 +273,12 @@ const stats = computed(() => {
   }
 }
 
-.empty {
-  @include card;
-  @include flex-center;
-  @include stack($space-sm);
-  padding: $space-2xl;
-  color: $color-text-muted;
-  font-size: $fs-sm;
+@include media-down($bp-sm) {
+  .movers .mover-link {
+    grid-template-columns: 10px 56px minmax(0, 1fr) auto;
+    gap: $space-sm;
+    padding: $space-md;
+    .name, .price { display: none; }
+  }
 }
 </style>

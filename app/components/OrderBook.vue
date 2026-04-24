@@ -164,7 +164,7 @@ const fmtQty = (q: number) => {
 }
 
 .freshness {
-  font-size: 10px;
+  font-size: $fs-3xs;
   font-family: $font-mono;
   color: $color-text-dim;
   &[data-freshness='fresh'] { color: $color-accent; }
@@ -173,7 +173,7 @@ const fmtQty = (q: number) => {
 }
 
 .source {
-  font-size: 10px;
+  font-size: $fs-3xs;
   font-family: $font-mono;
   color: $color-text-dim;
   &[data-source='ws'] { color: $color-accent; }
@@ -181,15 +181,15 @@ const fmtQty = (q: number) => {
 }
 
 .latency {
-  font-size: 10px;
+  font-size: $fs-3xs;
   font-family: $font-mono;
   color: $color-text-dim;
 }
 
 .chip {
   @include row($space-xs);
-  padding: 2px $space-sm;
-  font-size: 10px;
+  padding: $space-2xs $space-sm;
+  font-size: $fs-3xs;
   color: $color-text-muted;
 
   .dot {
@@ -209,14 +209,15 @@ const fmtQty = (q: number) => {
 
 .ob-cols {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
   gap: $space-sm;
   padding: 0 $space-xs;
   color: $color-text-dim;
-  font-size: 10px;
+  font-size: $fs-3xs;
   text-transform: uppercase;
   letter-spacing: 0.06em;
 
+  span { @include truncate; }
   span:nth-child(2),
   span:nth-child(3) { text-align: right; }
 }
@@ -224,19 +225,19 @@ const fmtQty = (q: number) => {
 .ob-side {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: $space-2xs;
 }
 
 .ob-row {
   position: relative;
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
   gap: $space-sm;
-  padding: 2px $space-xs;
+  padding: $space-2xs $space-xs;
   font-family: $font-mono;
   @include mono-nums;
-  font-size: 11px;
-  border-radius: 2px;
+  font-size: $fs-2xs;
+  border-radius: $radius-xs;
 
   // Barre de profondeur en background (ancrée à droite).
   &::before {
@@ -248,9 +249,9 @@ const fmtQty = (q: number) => {
     pointer-events: none;
   }
 
-  .p { font-weight: $fw-semibold; }
-  .q { text-align: right; color: $color-text-muted; }
-  .c { text-align: right; color: $color-text-dim; }
+  .p { font-weight: $fw-semibold; @include truncate; }
+  .q { text-align: right; color: $color-text-muted; @include truncate; }
+  .c { text-align: right; color: $color-text-dim; @include truncate; }
 
   &:hover { background: $color-surface-2; }
 }
@@ -285,9 +286,9 @@ const fmtQty = (q: number) => {
   font-family: $font-mono;
   @include mono-nums;
 
-  .lbl { color: $color-text-muted; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .lbl { color: $color-text-muted; font-size: $fs-3xs; text-transform: uppercase; letter-spacing: 0.08em; }
   .val { color: $color-text; font-weight: $fw-semibold; }
-  .pct { color: $color-text-dim; font-size: 10px; }
+  .pct { color: $color-text-dim; font-size: $fs-3xs; }
 
   &.placeholder .val,
   &.placeholder .pct { color: $color-text-dim; }

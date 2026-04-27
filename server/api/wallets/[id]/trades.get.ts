@@ -1,3 +1,4 @@
+import { ofetch } from 'ofetch'
 import type { TradeRecord } from '~~/shared/types/portfolio'
 
 /**
@@ -12,7 +13,7 @@ export default defineEventHandler(async (event): Promise<TradeRecord[]> => {
   const limit  = typeof q.limit === 'string' ? Number.parseInt(q.limit, 10) : 50
   const cursor = typeof q.cursor === 'string' ? Number.parseInt(q.cursor, 10) : undefined
 
-  return await $fetch<TradeRecord[]>(`${config.backendApiBasePath}/wallets/${id}/trades`, {
+  return await ofetch<TradeRecord[]>(`${config.backendApiBasePath}/wallets/${id}/trades`, {
     baseURL: config.backendApiUrl,
     headers: getHeaders(event) as HeadersInit,
     query: {

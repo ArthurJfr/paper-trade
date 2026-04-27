@@ -32,21 +32,22 @@ L'objectif : **regarder le marché 3 minutes par jour et comprendre ce qui s'y p
 
 ### 🔭 Visualisation
 
-- [ ] **Heatmap par secteurs** (L1 / DeFi / AI / Memes / Gaming / RWA / Stablecoins…) avec perf 24h / 7j / 30j
-- [ ] **Graph principal TradingView-like** (Lightweight Charts) avec overlays (MA, RSI, volume)
+- [x] **Heatmap** par catégories (taxonomie locale) avec perf 24h / 7j / 30j — page Marché
+- [x] **Bougies (Lightweight Charts)** sur fiche paire — avec volume
 - [ ] **Vue "bubble chart"** : taille = marketcap, couleur = perf, cluster = catégorie
 - [ ] **Corrélations inter-catégories** (matrice + graphe de forces)
-- [ ] **Top movers** live (gainers, losers, volume spikes)
+- [x] **Top movers** (gainers / losers / volume) — intégré à la page Marché
 - [ ] **Dominance BTC / ETH / stables** sur la durée
 
-### 🧪 Paper Trading
+### 🧪 Paper Trading (backend Express + PostgreSQL, proxy Nitro)
 
-- [ ] **Portefeuille simulé** avec solde USDC de départ configurable
-- [ ] **Ordres market & limit** sur toute paire Binance
-- [ ] **Historique des trades** + **P&L réalisé / non-réalisé**
-- [ ] **Journal de trade** (note, tag, screenshot du setup)
-- [ ] **Stats** : winrate, R moyen, drawdown, courbe d'equity
-- [ ] **Multi-portefeuilles** (test de stratégies en parallèle)
+- [x] **Portefeuilles simulés** (solde initial configurable, archivage, restauration)
+- [x] **Ordres market** et **ordres limites (GTC)** (exécution serveur, liste, annulation)
+- [x] **Positions, trades** + **P&L réalisé** sur la vente (côté backend) ; fiche token / wallets
+- [x] **Journal** (UI présente — fonctionnalité annotée bêta selon l’app)
+- [x] **Performance** : `GET /wallets/:id/performance` — P&L réalisé agrégé, winrate (par trades sell), max drawdown sur l’**équity trade-time** (courbe fournie côté UI)
+- [x] **Multi-wallets** (bascule active, duplicata, reset)
+- [x] **Alertes prix** : webhooks (POST) au franchissement d’un seuil, pause / reprise, CRUD
 
 ### 🏷️ Classification
 
@@ -66,9 +67,9 @@ Les actifs sont taggés dans une taxonomie éditable :
 
 > La taxonomie vit dans `server/data/taxonomy.json` — tu peux créer tes propres catégories et watchlists.
 
-### 🔔 À venir
+### 🔔 À venir (hors périmètre actuel)
 
-- Alertes prix (webhook Discord / Telegram)
+- Cibles d’alerte plus riches (ex. canaux prédéfinis Discord/Telegram) ou signatures avancées
 - Backtesting de stratégies simples
 - Import d'un historique Binance réel (read-only) pour comparer au paper
 - Mode "actions" (Yahoo Finance)
@@ -88,7 +89,8 @@ Les actifs sont taggés dans une taxonomie éditable :
 | **Data fetching** | `$fetch` + SWR via `useAsyncData` | Cache natif Nuxt |
 | **Temps réel** | Binance WebSocket (`/ws/!ticker@arr`) | Flux live gratuit, sans clé |
 | **Données de fond** | [CoinGecko API](https://www.coingecko.com/api) (tier gratuit) | Marketcap, catégories, metadata |
-| **Persistance** | SQLite via [Drizzle ORM](https://orm.drizzle.team) | Zero-config, suffit largement pour du local |
+| **Persistance** | [PostgreSQL](https://www.postgresql.org) (schéma via migrations SQL) | Partagé entre l’API et l’orchestrateur d’ordres / alertes |
+| **API paper** | Express (backend dédié dans `paper-trade/backend/`) + routes Nitro proxy | Cohérence d’intégration, auth JWT optionnelle |
 | **Runtime** | Node 20+ | — |
 | **Deploy** | Docker Compose (le projet vit dans `Docker/server/`) | Self-hosted, un `docker compose up` et c'est en ligne |
 
@@ -98,36 +100,11 @@ Les actifs sont taggés dans une taxonomie éditable :
 
 ```
 paper-trade/
-├── app/
-│   ├── assets/
-│   │   └── scss/
-│   │       ├── _variables.scss   # Couleurs, espacements, typo
-│   │       ├── _mixins.scss      # Media queries, helpers
-│   │       ├── _reset.scss       # Reset moderne
-│   │       └── main.scss         # Entrée globale
-│   ├── components/
-│   │   ├── charts/          # CandleChart, Heatmap, BubbleMap, Correlations
-│   │   ├── market/          # TokenRow, CategoryCard, TopMovers
-│   │   └── trading/         # OrderForm, Positions, TradeJournal
-│   ├── composables/         # useMarket, usePortfolio, useBinanceWS
-│   ├── pages/
-│   │   ├── index.vue        # Dashboard global
-│   │   ├── market/[cat].vue # Vue par catégorie
-│   │   ├── token/[id].vue   # Fiche token + chart
-│   │   └── portfolio.vue    # Paper trading
-│   └── stores/              # Pinia (market, portfolio, settings)
-├── server/
-│   ├── api/
-│   │   ├── market/          # Proxy CoinGecko (rate-limit friendly)
-│   │   ├── ws/binance.ts    # Bridge WebSocket
-│   │   └── portfolio/       # Ordres, positions, historique
-│   ├── data/
-│   │   └── taxonomy.json    # Classification des actifs
-│   └── db/                  # Schéma Drizzle + migrations
-├── .dockerignore
-├── Dockerfile
-├── docker-compose.yml
-├── nuxt.config.ts
+├── app/                     # Nuxt (UI)
+├── server/api/              # Proxy Nitro → `BACKEND_API_URL` (wallets, ordres, alertes, market…)
+├── shared/types/            # DTOs (portefeuille, ordres, performance, alertes)
+├── backend/                 # API Express + moteur paper (migrations SQL, jobs)
+├── .env.example, docker-compose.yml, Dockerfile
 └── README.md
 ```
 
@@ -200,6 +177,7 @@ COINGECKO_API_KEY=
 # Paper trading
 INITIAL_BALANCE_USDC=10000
 TRADING_FEE_BPS=10        # 0.10% de frais simulés
+PAPER_TRADE_JOB_TICK_MS=3000   # intervalle d’exécution des ordres limites + alertes (backend)
 ```
 
 ---
@@ -216,14 +194,11 @@ TRADING_FEE_BPS=10        # 0.10% de frais simulés
 
 ---
 
-## 🛣️ Roadmap
+## 🛣️ Roadmap (état)
 
-- **v0.1 — MVP visualisation** : heatmap, fiche token, chart, top movers
-- **v0.2 — Paper trading** : ordres market/limit, positions, P&L
-- **v0.3 — Classification avancée** : taxonomie éditable, watchlists perso
-- **v0.4 — Alertes** : webhooks Discord / Telegram
-- **v0.5 — Backtesting** : stratégies simples sur données historiques
-- **v1.0 — Polish** : thèmes, exports CSV, mode mobile
+- **Visu / marché** : heatmap, fiche paire, chart bougies, top movers — **livré**
+- **Paper trading** : market + limit, multi-wallets, performance (winrate, drawdown, equity), alertes webhooks — **livré** (détails = code + `backend/migrations/`)
+- **Piste suivante (non livré)** : taxonomie pleinement éditable côté UI, backtesting, bubble chart, corrélations, mode actions — voir plan produit
 
 ---
 

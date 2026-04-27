@@ -284,14 +284,14 @@ function tickerFor(pair: string) {
               icon="ph:pencil-simple-bold"
               variant="ghost"
               size="sm"
-              aria-label="Éditer la note"
+              ariaLabel="Éditer la note"
               @click="startEdit(entry.id)"
             />
             <UiIconButton
               icon="ph:trash-bold"
               variant="ghost"
               size="sm"
-              aria-label="Supprimer la note"
+              ariaLabel="Supprimer la note"
               @click="remove(entry.id)"
             />
           </div>

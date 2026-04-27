@@ -1,3 +1,4 @@
+import { ofetch } from 'ofetch'
 import type { PositionSummary } from '~~/shared/types/portfolio'
 
 /**
@@ -6,7 +7,7 @@ import type { PositionSummary } from '~~/shared/types/portfolio'
 export default defineEventHandler(async (event): Promise<PositionSummary[]> => {
   const config = useRuntimeConfig()
   const id = getRouterParam(event, 'id')
-  return await $fetch<PositionSummary[]>(`${config.backendApiBasePath}/wallets/${id}/positions`, {
+  return await ofetch<PositionSummary[]>(`${config.backendApiBasePath}/wallets/${id}/positions`, {
     baseURL: config.backendApiUrl,
     headers: getHeaders(event) as HeadersInit,
   })

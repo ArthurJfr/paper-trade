@@ -1,3 +1,4 @@
+import { ofetch } from 'ofetch'
 import type { WalletWithStats } from '~~/shared/types/wallet'
 
 interface DuplicateRequest {
@@ -14,7 +15,7 @@ export default defineEventHandler(async (event): Promise<WalletWithStats> => {
   const config = useRuntimeConfig()
   const id = getRouterParam(event, 'id')
   const body = await readBody<DuplicateRequest>(event).catch(() => ({} as DuplicateRequest))
-  return await $fetch<WalletWithStats>(`${config.backendApiBasePath}/wallets/${id}/duplicate`, {
+  return await ofetch<WalletWithStats>(`${config.backendApiBasePath}/wallets/${id}/duplicate`, {
     method: 'POST',
     baseURL: config.backendApiUrl,
     headers: getHeaders(event) as HeadersInit,

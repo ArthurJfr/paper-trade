@@ -7,6 +7,7 @@ import type {
   UpdateWalletRequest,
   WalletWithStats,
 } from '~~/shared/types/wallet'
+import type { WalletPerformance } from '~~/shared/types/portfolio'
 
 definePageMeta({
   title: 'Wallets',
@@ -219,6 +220,43 @@ function cardPerf(w: WalletWithStats): number {
 const activeCount = computed(() => wallets.list.length)
 const archivedCount = computed(() => wallets.archived.length)
 const maxReached = computed(() => activeCount.value >= 20)
+
+// ─── Performance (wallet actif) — rejeu trades, drawdown, winrate clôtures ─
+const performance = ref<WalletPerformance | null>(null)
+const perfLoading = ref(false)
+
+async function loadPerformance() {
+  const id = wallets.activeId
+  if (!id) {
+    performance.value = null
+    return
+  }
+  perfLoading.value = true
+  try {
+    performance.value = await $fetch<WalletPerformance>(`/api/wallets/${id}/performance`)
+  } catch {
+    performance.value = null
+  } finally {
+    perfLoading.value = false
+  }
+}
+
+watch(() => wallets.activeId, () => { loadPerformance() }, { immediate: true })
+watch(() => portfolio.hydratedAt, () => { loadPerformance() })
+
+const equityPath = computed(() => {
+  const pts = performance.value?.equityPoints ?? []
+  if (pts.length < 2) return null
+  const yv = pts.map(p => p.equity)
+  const min = Math.min(...yv)
+  const max = Math.max(...yv)
+  const span = Math.max(max - min, 1e-9)
+  return pts.map((p, i) => {
+    const x = (i / (pts.length - 1)) * 200
+    const y = 48 - ((p.equity - min) / span) * 44
+    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`
+  }).join(' ')
+})
 </script>
 
 <template>
@@ -253,6 +291,46 @@ const maxReached = computed(() => activeCount.value >= 20)
         </UiButton>
       </template>
     </PageHeader>
+
+    <UiCard v-if="wallets.activeId" class="perf-block">
+      <h2>Performance (wallet actif)</h2>
+      <p class="perf-sub">
+        Courbe d’équity reconstituée trade-à-trade (prix moyen en portefeuille = mark).
+        Win rate = part des <strong>ventes</strong> à P&amp;L réalisé &gt; 0.
+      </p>
+      <div v-if="perfLoading" class="perf-skel">Chargement des stats…</div>
+      <div v-else-if="!performance" class="perf-skel">Stats indisponibles.</div>
+      <div v-else class="perf-body">
+        <div class="perf-stats">
+          <div>
+            <span class="lbl">P&amp;L réalisé (total)</span>
+            <span class="val" :data-trend="trendOf(performance.realizedPnlTotal)">{{ fmtCurrency(performance.realizedPnlTotal) }}</span>
+          </div>
+          <div>
+            <span class="lbl">Max drawdown</span>
+            <span class="val">-{{ performance.maxDrawdownPct.toFixed(1) }} %</span>
+          </div>
+          <div>
+            <span class="lbl">Win rate (clôtures)</span>
+            <span class="val">{{ performance.winRate == null ? '—' : `${performance.winRate.toFixed(0)} %` }}</span>
+          </div>
+          <div>
+            <span class="lbl">Trades (ven./ach.)</span>
+            <span class="val mono">{{ performance.sellWinCount }}/{{ performance.sellLoseCount }} / n={{ performance.totalTrades }}</span>
+          </div>
+        </div>
+        <svg
+          v-if="equityPath"
+          class="eq-chart"
+          viewBox="0 0 200 50"
+          aria-label="Courbe d’équity"
+        >
+          <rect width="200" height="50" class="bg" />
+          <path :d="equityPath" fill="none" class="line" />
+        </svg>
+        <p v-else class="no-eq">Pas assez de points pour un graphique (au moins 2 trades avec mouvement de capital).</p>
+      </div>
+    </UiCard>
 
     <ClientOnly>
       <template #fallback>
@@ -395,6 +473,41 @@ const maxReached = computed(() => activeCount.value >= 20)
   display: flex;
   flex-direction: column;
   gap: $space-lg;
+}
+
+.perf-block {
+  h2 { font-size: $fs-md; font-weight: $fw-semibold; margin: 0 0 $space-sm; }
+  .perf-sub {
+    font-size: $fs-2xs;
+    color: $color-text-dim;
+    line-height: $lh-normal;
+    margin: 0 0 $space-md;
+  }
+  .perf-skel { color: $color-text-dim; font-size: $fs-sm; }
+  .perf-body { @include stack($space-md); }
+  .perf-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: $space-sm;
+    .lbl { display: block; font-size: $fs-3xs; text-transform: uppercase; letter-spacing: 0.04em; color: $color-text-dim; }
+    .val {
+      @include mono-nums;
+      font-size: $fs-sm;
+      font-weight: $fw-semibold;
+      display: block;
+      margin-top: 2px;
+      &.mono { font-size: $fs-xs; }
+    }
+  }
+  .no-eq { font-size: $fs-2xs; color: $color-text-dim; margin: 0; }
+  .eq-chart {
+    width: 100%;
+    max-width: 420px;
+    height: auto;
+    border-radius: $radius-sm;
+    .bg { fill: $color-bg; }
+    .line { stroke: $color-accent; stroke-width: 1.2; }
+  }
 }
 
 .grid {

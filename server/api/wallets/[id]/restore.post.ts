@@ -1,3 +1,4 @@
+import { ofetch } from 'ofetch'
 import type { WalletWithStats } from '~~/shared/types/wallet'
 
 /**
@@ -8,7 +9,7 @@ import type { WalletWithStats } from '~~/shared/types/wallet'
 export default defineEventHandler(async (event): Promise<WalletWithStats> => {
   const config = useRuntimeConfig()
   const id = getRouterParam(event, 'id')
-  return await $fetch<WalletWithStats>(`${config.backendApiBasePath}/wallets/${id}/restore`, {
+  return await ofetch<WalletWithStats>(`${config.backendApiBasePath}/wallets/${id}/restore`, {
     method: 'POST',
     baseURL: config.backendApiUrl,
     headers: getHeaders(event) as HeadersInit,

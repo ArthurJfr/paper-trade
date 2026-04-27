@@ -1,3 +1,4 @@
+import { ofetch } from 'ofetch'
 import type { WalletWithStats } from '~~/shared/types/wallet'
 
 /**
@@ -8,7 +9,7 @@ import type { WalletWithStats } from '~~/shared/types/wallet'
 export default defineEventHandler(async (event): Promise<WalletWithStats[]> => {
   const config = useRuntimeConfig()
   const q = getQuery(event)
-  return await $fetch<WalletWithStats[]>(`${config.backendApiBasePath}/wallets`, {
+  return await ofetch<WalletWithStats[]>(`${config.backendApiBasePath}/wallets`, {
     baseURL: config.backendApiUrl,
     headers: getHeaders(event) as HeadersInit,
     query: {

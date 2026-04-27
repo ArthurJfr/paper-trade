@@ -47,24 +47,117 @@ export interface PortfolioSnapshot {
   perfPct:    number  // (equity − initial) / initial × 100
 }
 
+import type { Wallet } from './wallet'
+
 // ─── Requêtes ─────────────────────────────────────────────────────────────
 
 /**
  * Ordre market.
  * - L'un des deux champs `quantity` ou `notional` doit être fourni (xor).
- * - `side: 'buy'`  → sucre du cash, crée/augmente la position
- * - `side: 'sell'` → réduit la position, crédite le cash (net de frais)
  */
-export interface OrderRequest {
-  pair:      string
-  side:      OrderSide
-  quantity?: number   // base asset (ex: 0.1 BTC)
-  notional?: number   // USDC visé (ex: 500 $)
+export interface MarketOrderRequest {
+  type?:    'market' | undefined
+  pair:     string
+  side:     OrderSide
+  quantity?: number
+  notional?: number
 }
 
-/** Résultat d'une exécution d'ordre. */
+/** Limite GTC. Escrow sur l’achat. */
+export interface LimitOrderRequest {
+  type:       'limit'
+  pair:       string
+  side:       OrderSide
+  limitPrice: number
+  quantity?:  number
+  notional?:  number
+}
+
+export type OrderRequest = MarketOrderRequest | LimitOrderRequest
+
+export type LimitOrderStatus = 'open' | 'filled' | 'cancelled'
+
+export interface LimitOrderRecord {
+  id:            number
+  walletId:      number
+  pair:          string
+  side:          OrderSide
+  limitPrice:    number
+  quantity:      number
+  notional:      number
+  feeBps:        number
+  status:        LimitOrderStatus
+  escrowCash:    number | null
+  filledTradeId:  number | null
+  createdAt:     number
+  updatedAt:     number
+}
+
+export interface MarketOrderResult {
+  orderType:  'market'
+  trade:      TradeRecord
+  account:    AccountState
+  position:   PositionSummary | null
+  wallet:     Wallet
+}
+
+export interface LimitOrderPlaced {
+  orderType:   'limit'
+  limitOrder:  LimitOrderRecord
+}
+
+export type OrderSubmitResult = MarketOrderResult | LimitOrderPlaced
+
+/** Résultat d’exécution market (format store). */
 export interface OrderResult {
   trade:    TradeRecord
   account:  AccountState
-  position: PositionSummary | null // null si la position a été fermée
+  position: PositionSummary | null
+}
+
+export interface EquityPoint {
+  at:     number
+  equity: number
+}
+
+export interface WalletPerformance {
+  initialBalance:   number
+  finalEquity:     number
+  realizedPnlTotal: number
+  maxDrawdownPct:  number
+  winRate:         number | null
+  sellWinCount:    number
+  sellLoseCount:   number
+  sellFlatCount:   number
+  totalTrades:     number
+  equityPoints:    EquityPoint[]
+}
+
+export type PriceOp = 'above' | 'below'
+
+export interface PriceAlert {
+  id:               number
+  walletId:         number | null
+  pair:            string
+  op:              PriceOp
+  targetPrice:     number
+  oneShot:         boolean
+  webhookUrl:      string | null
+  lastTriggeredAt: number | null
+  cooldownMs:      number
+  active:          boolean
+  label:           string | null
+  createdAt:       number
+  updatedAt:       number
+}
+
+export interface CreatePriceAlertRequest {
+  pair:        string
+  op:         PriceOp
+  targetPrice: number
+  walletId?:  number
+  oneShot?:   boolean
+  webhookUrl?: string
+  label?:     string
+  cooldownMs?: number
 }

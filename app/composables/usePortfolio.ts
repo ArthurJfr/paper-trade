@@ -1,6 +1,7 @@
 import type {
   OrderRequest,
   OrderResult,
+  OrderSubmitResult,
   TradeRecord,
 } from '~~/shared/types/portfolio'
 import type { WalletSnapshot } from '~/composables/useWallets'
@@ -26,13 +27,19 @@ export async function usePortfolio() {
       : null,
   )
 
-  const { data, error, refresh } = await useFetch<WalletSnapshot | null>(url, {
-    key: 'wallet-snapshot',
-    server: true,
-    default: () => null as WalletSnapshot | null,
-    // Pas de fetch s'il n'y a pas encore d'id (évite un /api/wallets/null).
-    watch: [url],
-  })
+  const { data, error, refresh } = await useAsyncData(
+    'wallet-snapshot',
+    async (): Promise<WalletSnapshot | null> => {
+      const u = url.value
+      if (!u) return null
+      return await $fetch<WalletSnapshot>(u)
+    },
+    {
+      server: true,
+      default: () => null as WalletSnapshot | null,
+      watch: [url],
+    },
+  )
 
   if (data.value) store.hydrate(data.value)
 
@@ -43,20 +50,23 @@ export async function usePortfolio() {
   const placing = ref(false)
   const lastError = ref<string | null>(null)
 
-  async function placeOrder(req: OrderRequest): Promise<OrderResult> {
+  async function placeOrder(req: OrderRequest): Promise<OrderSubmitResult> {
     const id = wallets.activeId
     if (!id) throw new Error('Aucun wallet actif')
     placing.value = true
     lastError.value = null
     try {
-      const res = await $fetch<OrderResult>(`/api/wallets/${id}/orders`, {
+      const res = await $fetch<OrderSubmitResult>(`/api/wallets/${id}/orders`, {
         method: 'POST',
         body: req,
       })
-      store.applyOrderResult(res)
-      // Rafraîchit les stats du wallet actif (equity, perf, trade count…).
-      // On fait un refresh léger sans bloquer, en best-effort.
-      wallets.fetchAll().catch(() => { /* noop : l'UI affiche la dernière version */ })
+      if (res.orderType === 'limit') {
+        wallets.fetchAll().catch(() => { /* noop */ })
+        return res
+      }
+      const o: OrderResult = { trade: res.trade, account: res.account, position: res.position }
+      store.applyOrderResult(o)
+      wallets.fetchAll().catch(() => { /* noop */ })
       return res
     } catch (err: unknown) {
       const msg = extractErrorMessage(err)

@@ -2,6 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import jwt from 'jsonwebtoken'
 import { initDb, pool } from './db.js'
+import { createTradingEngine } from './trading.js'
 
 const app = express()
 app.use(cors())
@@ -168,6 +169,58 @@ function mapAccountFromWallet(wallet) {
     cashBalance:    wallet.cashBalance,
     initialBalance: wallet.initialBalance,
     updatedAt:      wallet.updatedAt,
+  }
+}
+
+function httpError(status, message) {
+  const err = new Error(message)
+  err.status = status
+  return err
+}
+
+const { executeTradeAtPrice } = createTradingEngine({
+  TRADING_FEE_BPS,
+  mapTradeRow,
+  mapPositionRow,
+  mapAccountFromWallet,
+  mapWalletRow,
+  getWalletById,
+  httpError,
+})
+
+function mapLimitOrderRow(r) {
+  return {
+    id: Number(r.id),
+    walletId: Number(r.wallet_id),
+    pair: r.pair,
+    side: r.side === 'sell' ? 'sell' : 'buy',
+    limitPrice: Number(r.limit_price),
+    quantity: Number(r.quantity),
+    notional: Number(r.notional),
+    feeBps: Number(r.fee_bps),
+    status: r.status,
+    escrowCash: r.escrow_cash == null ? null : Number(r.escrow_cash),
+    filledTradeId: r.filled_trade_id == null ? null : Number(r.filled_trade_id),
+    createdAt: new Date(r.created_at).getTime(),
+    updatedAt: new Date(r.updated_at).getTime(),
+  }
+}
+
+function mapPriceAlertRow(r) {
+  return {
+    id: Number(r.id),
+    walletId: r.wallet_id == null ? null : Number(r.wallet_id),
+    pair: r.pair,
+    op: r.op,
+    targetPrice: Number(r.target_price),
+    oneShot: r.one_shot,
+    webhookUrl: r.webhook_url ?? null,
+    lastTriggeredAt: r.last_triggered_at ? new Date(r.last_triggered_at).getTime() : null,
+    cooldownMs: Number(r.cooldown_ms),
+    active: r.active,
+    label: r.label,
+    createdAt: new Date(r.created_at).getTime(),
+    updatedAt: new Date(r.updated_at).getTime(),
   }
 }
 
@@ -669,131 +722,58 @@ apiV1.get('/wallets/:id/trades', authIfEnabled, async (req, res) => {
   }
 })
 
-// ─── Orders (place un trade market) ────────────────────────────────────────
+// ─── Ordres market + limite (GTC) + jobs ───────────────────────────────────
 
-async function placeOrderForWallet(walletId, body) {
+const JOB_TICK_MS = Number(process.env.PAPER_TRADE_JOB_TICK_MS ?? 3000)
+
+async function createLimitOrder(walletId, body) {
   const pair = String(body?.pair ?? '').toUpperCase()
+  if (!/^[A-Z0-9]{3,20}$/.test(pair)) throw httpError(400, 'Pair invalide')
   const side = body?.side
+  if (side !== 'buy' && side !== 'sell') throw httpError(400, '`side` invalide')
+  const limitPrice = Number(body?.limitPrice)
+  if (!Number.isFinite(limitPrice) || limitPrice <= 0) throw httpError(400, '`limitPrice` invalide')
   const quantityInput = Number(body?.quantity ?? 0)
   const notionalInput = Number(body?.notional ?? 0)
   const hasQty = Number.isFinite(quantityInput) && quantityInput > 0
   const hasNotional = Number.isFinite(notionalInput) && notionalInput > 0
-
-  if (!pair) throw httpError(400, '`pair` requise')
-  if (side !== 'buy' && side !== 'sell') throw httpError(400, '`side` doit être "buy" ou "sell"')
-  if (hasQty === hasNotional) throw httpError(400, 'Fournir exactement `quantity` OU `notional`')
+  if (hasQty === hasNotional) throw httpError(400, 'Fournir `quantity` OU `notional` (limite)')
+  const n = hasNotional ? notionalInput : quantityInput * limitPrice
+  const quantity = hasNotional ? (notionalInput / limitPrice) : quantityInput
+  if (!Number.isFinite(quantity) || quantity <= 0) throw httpError(400, 'Quantité invalide')
+  const notional = n
+  const fee = (notional * TRADING_FEE_BPS) / 10_000
 
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const walletRaw = await getWalletById(client, walletId)
-    if (!walletRaw) { await client.query('ROLLBACK'); throw httpError(404, 'Wallet introuvable') }
-    if (walletRaw.archived_at) { await client.query('ROLLBACK'); throw httpError(422, 'Wallet archivé — trades bloqués') }
-
-    const currentPositionResult = await client.query(
-      'SELECT * FROM position WHERE wallet_id = $1 AND pair = $2',
-      [walletId, pair],
-    )
-    const current = currentPositionResult.rows[0] ?? null
-
-    const price = await fetchMarketPrice(pair)
-    const quantity = hasQty ? quantityInput : (notionalInput / price)
-    const notional = quantity * price
-    const fee = (notional * TRADING_FEE_BPS) / 10_000
-
+    const w = await getWalletById(client, walletId)
+    if (!w) { await client.query('ROLLBACK'); throw httpError(404, 'Wallet introuvable') }
+    if (w.archived_at) { await client.query('ROLLBACK'); throw httpError(422, 'Wallet archivé') }
+    let escrow = null
     if (side === 'buy') {
-      const totalCost = notional + fee
-      if (Number(walletRaw.cash_balance) < totalCost - 1e-9) {
+      escrow = notional + fee
+      if (Number(w.cash_balance) < escrow - 1e-9) {
         await client.query('ROLLBACK')
         throw httpError(422, 'Cash insuffisant')
       }
-      const prevQty = Number(current?.quantity ?? 0)
-      const prevAvg = Number(current?.avg_cost ?? 0)
-      const newQty = prevQty + quantity
-      const newAvg = newQty > 0 ? ((prevQty * prevAvg + quantity * price) / newQty) : price
-
       await client.query(
-        'UPDATE wallet SET cash_balance = $1, updated_at = NOW() WHERE id = $2',
-        [Number(walletRaw.cash_balance) - totalCost, walletId],
+        'UPDATE wallet SET cash_balance = cash_balance - $1, updated_at = NOW() WHERE id = $2',
+        [escrow, walletId],
       )
-      await client.query(
-        `INSERT INTO position (wallet_id, pair, quantity, avg_cost, updated_at)
-         VALUES ($1, $2, $3, $4, NOW())
-         ON CONFLICT (wallet_id, pair)
-         DO UPDATE SET quantity = EXCLUDED.quantity, avg_cost = EXCLUDED.avg_cost, updated_at = NOW()`,
-        [walletId, pair, newQty, newAvg],
-      )
-
-      const tradeInsert = await client.query(
-        `INSERT INTO trade (wallet_id, pair, side, quantity, price, notional, fee, realized_pnl)
-         VALUES ($1, $2, 'buy', $3, $4, $5, $6, NULL)
-         RETURNING *`,
-        [walletId, pair, quantity, price, notional, fee],
-      )
-
-      await client.query('COMMIT')
-      const trade = mapTradeRow(tradeInsert.rows[0])
-      const updatedWallet = mapWalletRow((await pool.query('SELECT * FROM wallet WHERE id = $1', [walletId])).rows[0])
-      const updatedPosition = (await pool.query(
-        'SELECT * FROM position WHERE wallet_id = $1 AND pair = $2',
-        [walletId, pair],
-      )).rows[0]
-      return {
-        trade,
-        account:  mapAccountFromWallet(updatedWallet),
-        position: updatedPosition ? mapPositionRow(updatedPosition) : null,
-        wallet:   updatedWallet,
-      }
-    }
-
-    // SELL
-    const available = Number(current?.quantity ?? 0)
-    if (available < quantity - 1e-12) {
-      await client.query('ROLLBACK')
-      throw httpError(422, 'Position insuffisante')
-    }
-
-    const proceeds = notional - fee
-    const avgCost = Number(current?.avg_cost ?? 0)
-    const realizedPnl = quantity * (price - avgCost) - fee
-    const remaining = available - quantity
-
-    await client.query(
-      'UPDATE wallet SET cash_balance = $1, updated_at = NOW() WHERE id = $2',
-      [Number(walletRaw.cash_balance) + proceeds, walletId],
-    )
-
-    if (remaining <= 1e-12) {
-      await client.query('DELETE FROM position WHERE wallet_id = $1 AND pair = $2', [walletId, pair])
     } else {
-      await client.query(
-        'UPDATE position SET quantity = $1, updated_at = NOW() WHERE wallet_id = $2 AND pair = $3',
-        [remaining, walletId, pair],
-      )
+      const { rows: pr } = await client.query('SELECT * FROM position WHERE wallet_id = $1 AND pair = $2', [walletId, pair])
+      const available = pr[0] ? Number(pr[0].quantity) : 0
+      if (available < quantity - 1e-12) { await client.query('ROLLBACK'); throw httpError(422, 'Position insuffisante') }
     }
-
-    const tradeInsert = await client.query(
-      `INSERT INTO trade (wallet_id, pair, side, quantity, price, notional, fee, realized_pnl)
-       VALUES ($1, $2, 'sell', $3, $4, $5, $6, $7)
-       RETURNING *`,
-      [walletId, pair, quantity, price, notional, fee, realizedPnl],
+    const ins = await client.query(
+      `INSERT INTO limit_order (wallet_id, pair, side, limit_price, quantity, notional, fee_bps, status, escrow_cash)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'open', $8) RETURNING *`,
+      [walletId, pair, side, limitPrice, quantity, notional, TRADING_FEE_BPS, side === 'buy' ? escrow : null],
     )
-
+    await logWalletEvent(client, walletId, 'limit_order_created', { id: ins.rows[0].id, pair, side, limitPrice })
     await client.query('COMMIT')
-    const trade = mapTradeRow(tradeInsert.rows[0])
-    const updatedWallet = mapWalletRow((await pool.query('SELECT * FROM wallet WHERE id = $1', [walletId])).rows[0])
-    const updatedPositionRow = remaining <= 1e-12
-      ? null
-      : (await pool.query(
-        'SELECT * FROM position WHERE wallet_id = $1 AND pair = $2',
-        [walletId, pair],
-      )).rows[0]
-    return {
-      trade,
-      account:  mapAccountFromWallet(updatedWallet),
-      position: updatedPositionRow ? mapPositionRow(updatedPositionRow) : null,
-      wallet:   updatedWallet,
-    }
+    return { orderType: 'limit', limitOrder: mapLimitOrderRow(ins.rows[0]) }
   } catch (e) {
     try { await client.query('ROLLBACK') } catch (_r) { /* noop */ }
     throw e
@@ -802,10 +782,226 @@ async function placeOrderForWallet(walletId, body) {
   }
 }
 
-function httpError(status, message) {
-  const err = new Error(message)
-  err.status = status
-  return err
+async function placeOrderForWallet(walletId, body) {
+  const orderType = String(body?.type ?? 'market').toLowerCase()
+  if (orderType === 'limit') {
+    return createLimitOrder(walletId, body)
+  }
+  if (orderType !== 'market') {
+    throw httpError(400, "`type` doit être 'market' ou 'limit'")
+  }
+  const pair = String(body?.pair ?? '').toUpperCase()
+  const side = body?.side
+  const quantityInput = Number(body?.quantity ?? 0)
+  const notionalInput = Number(body?.notional ?? 0)
+  const hasQty = Number.isFinite(quantityInput) && quantityInput > 0
+  const hasNotional = Number.isFinite(notionalInput) && notionalInput > 0
+  if (!pair) throw httpError(400, '`pair` requise')
+  if (side !== 'buy' && side !== 'sell') throw httpError(400, '`side` doit être "buy" ou "sell"')
+  if (hasQty === hasNotional) throw httpError(400, 'Fournir exactement `quantity` OU `notional`')
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const price = await fetchMarketPrice(pair)
+    const quantity = hasQty ? quantityInput : (notionalInput / price)
+    const res = await executeTradeAtPrice(client, walletId, { pair, side, quantity, price, fromEscrowBuy: false })
+    await client.query('COMMIT')
+    return { orderType: 'market', trade: res.trade, account: res.account, position: res.position, wallet: res.wallet }
+  } catch (e) {
+    try { await client.query('ROLLBACK') } catch (_r) { /* noop */ }
+    throw e
+  } finally {
+    client.release()
+  }
+}
+
+async function processOpenLimitOrders() {
+  const { rows } = await pool.query(
+    'SELECT * FROM limit_order WHERE status = $1 ORDER BY id ASC',
+    ['open'],
+  )
+  for (const row of rows) {
+    const client = await pool.connect()
+    try {
+      const last = await fetchMarketPrice(row.pair)
+      const p = Number(row.limit_price)
+      const can = (row.side === 'buy' && last >= p) || (row.side === 'sell' && last <= p)
+      if (!can) continue
+      await client.query('BEGIN')
+      const l = (await client.query("SELECT * FROM limit_order WHERE id = $1 AND status = 'open' FOR UPDATE", [row.id]))
+        .rows[0]
+      if (!l) { await client.query('ROLLBACK'); continue }
+      const lPrice = Number(l.limit_price)
+      const last2 = await fetchMarketPrice(l.pair)
+      if ((l.side === 'buy' && last2 < lPrice) || (l.side === 'sell' && last2 > lPrice)) {
+        await client.query('ROLLBACK')
+        continue
+      }
+      const qty = Number(l.quantity)
+      const res = await executeTradeAtPrice(client, l.wallet_id, {
+        pair:     l.pair,
+        side:     l.side,
+        quantity: qty,
+        price:    lPrice,
+        fromEscrowBuy: l.side === 'buy' && l.escrow_cash != null,
+      })
+      await client.query(
+        `UPDATE limit_order SET status = 'filled', updated_at = NOW(), filled_trade_id = $1 WHERE id = $2`,
+        [res.trade.id, l.id],
+      )
+      await logWalletEvent(client, l.wallet_id, 'limit_order_filled', { orderId: l.id, tradeId: res.trade.id })
+      await client.query('COMMIT')
+    } catch (_e) {
+      try { await client.query('ROLLBACK') } catch (_r) { /* noop */ }
+    } finally {
+      client.release()
+    }
+  }
+}
+
+async function processPriceAlerts() {
+  let rows
+  try {
+    const r = await pool.query('SELECT * FROM price_alert WHERE active = true')
+    rows = r.rows
+  } catch (_e) {
+    return
+  }
+  if (!rows.length) return
+  const byPair = new Map()
+  for (const a of rows) {
+    if (!byPair.has(a.pair)) byPair.set(a.pair, [])
+    byPair.get(a.pair).push(a)
+  }
+  for (const [pair, alerts] of byPair) {
+    let last
+    try {
+      last = await fetchMarketPrice(pair)
+    } catch { continue } // skip pair
+    for (const a of alerts) {
+      const hit = (a.op === 'above' && last >= a.target_price) || (a.op === 'below' && last <= a.target_price)
+      if (!hit) continue
+      const now = Date.now()
+      if (a.last_triggered_at) {
+        const dt = now - new Date(a.last_triggered_at).getTime()
+        if (dt < Number(a.cooldown_ms)) continue
+      }
+      const payload = {
+        type:   'price_alert',
+        pair,
+        op:     a.op,
+        target: Number(a.target_price),
+        last,
+        alertId:     Number(a.id),
+        triggeredAt: new Date().toISOString(),
+      }
+      if (a.webhook_url) {
+        try {
+          await fetch(a.webhook_url, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify(payload),
+          })
+        } catch (e) { console.error('[price_alert webhook]', e.message) }
+      }
+      if (a.one_shot) {
+        await pool.query(
+          'UPDATE price_alert SET active = false, last_triggered_at = NOW(), updated_at = NOW() WHERE id = $1',
+          [a.id],
+        )
+      } else {
+        await pool.query(
+          'UPDATE price_alert SET last_triggered_at = NOW(), updated_at = NOW() WHERE id = $1',
+          [a.id],
+        )
+      }
+    }
+  }
+}
+
+/**
+ * Rejeu des trades (ordre chronologique) pour la courbe d’équity et le drawdown.
+ * Mark: avg_cost pour chaque position ouverte.
+ */
+function computeWalletPerformanceFromTrades(rows, initialBalance) {
+  let cash = initialBalance
+  const pos = new Map()
+  const equityPoints = []
+  const tradesChrono = rows.slice().sort((a, b) => {
+    const t = new Date(a.created_at) - new Date(b.created_at)
+    if (t !== 0) return t
+    return Number(a.id) - Number(b.id)
+  })
+  for (const tr of tradesChrono) {
+    const t = tr.side === 'sell' ? 'sell' : 'buy'
+    if (t === 'buy') {
+      cash -= Number(tr.notional) + Number(tr.fee)
+      const p = tr.pair
+      const cur = pos.get(p) || { q: 0, avg: 0 }
+      const q = Number(tr.quantity)
+      const price = Number(tr.price)
+      const nq = cur.q + q
+      const navg = nq > 0 ? ((cur.q * cur.avg + q * price) / nq) : price
+      pos.set(p, { q: nq, avg: navg })
+    } else {
+      const p = tr.pair
+      const cur = pos.get(p) || { q: 0, avg: 0 }
+      const q = Number(tr.quantity)
+      cash += Number(tr.notional) - Number(tr.fee)
+      const newQ = cur.q - q
+      if (newQ <= 1e-12) pos.delete(p)
+      else pos.set(p, { q: newQ, avg: cur.avg })
+    }
+    let mkt = 0
+    for (const [, { q, avg }] of pos) mkt += q * avg
+    equityPoints.push({
+      at:     new Date(tr.created_at).getTime(),
+      equity: cash + mkt,
+    })
+  }
+  let mktEnd = 0
+  for (const [, { q, avg }] of pos) mktEnd += q * avg
+  const finalEquity = cash + mktEnd
+  let peak = initialBalance
+  let maxDrawdown = 0
+  for (const { equity } of equityPoints) {
+    if (equity > peak) peak = equity
+    if (peak > 0) {
+      const dd = (peak - equity) / peak
+      if (dd > maxDrawdown) maxDrawdown = dd
+    }
+  }
+  let winningSells = 0
+  let losingSells = 0
+  let breakEvenSells = 0
+  let sumRealized = 0
+  for (const tr of rows) {
+    if (tr.side !== 'sell' || tr.realized_pnl == null) continue
+    const rp = Number(tr.realized_pnl)
+    sumRealized += rp
+    if (rp > 1e-9) winningSells++
+    else if (rp < -1e-9) losingSells++
+    else breakEvenSells++
+  }
+  const sellTrades = winningSells + losingSells + breakEvenSells
+  const winRate = sellTrades > 0 ? (winningSells / sellTrades) * 100 : null
+  return {
+    initialBalance,
+    finalEquity,
+    realizedPnlTotal:  sumRealized,
+    maxDrawdownPct:    maxDrawdown * 100,
+    winRate:           winRate,
+    sellWinCount:      winningSells,
+    sellLoseCount:     losingSells,
+    sellFlatCount:     breakEvenSells,
+    totalTrades:       rows.length,
+    equityPoints,
+  }
+}
+
+async function runBackgroundJobs() {
+  await processOpenLimitOrders()
+  await processPriceAlerts()
 }
 
 apiV1.post('/wallets/:id/orders', authIfEnabled, async (req, res) => {
@@ -820,6 +1016,140 @@ apiV1.post('/wallets/:id/orders', authIfEnabled, async (req, res) => {
   }
 })
 
+apiV1.get('/wallets/:id/limit-orders', authIfEnabled, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ statusMessage: 'id invalide' })
+  const status = String(req.query.status ?? 'open')
+  try {
+    let q = 'SELECT * FROM limit_order WHERE wallet_id = $1'
+    const p = [id]
+    if (status && status !== 'all') { q += ' AND status = $2'; p.push(status) }
+    q += ' ORDER BY id DESC'
+    const { rows } = await pool.query(q, p)
+    res.json(rows.map(mapLimitOrderRow))
+  } catch (e) {
+    res.status(500).json({ statusMessage: e.message || 'Erreur serveur' })
+  }
+})
+
+apiV1.delete('/wallets/:id/limit-orders/:orderId', authIfEnabled, async (req, res) => {
+  const wid = Number(req.params.id)
+  const oid = Number(req.params.orderId)
+  if (!Number.isFinite(wid) || wid <= 0 || !Number.isFinite(oid) || oid <= 0) {
+    return res.status(400).json({ statusMessage: 'param invalide' })
+  }
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const o = (await client.query("SELECT * FROM limit_order WHERE id = $1 AND wallet_id = $2 FOR UPDATE", [oid, wid]))
+      .rows[0]
+    if (!o) { await client.query('ROLLBACK'); return res.status(404).json({ statusMessage: 'Ordre introuvable' }) }
+    if (o.status !== 'open') { await client.query('ROLLBACK'); return res.status(422).json({ statusMessage: 'Ordre non annulable' }) }
+    if (o.escrow_cash != null && o.side === 'buy') {
+      await client.query(
+        'UPDATE wallet SET cash_balance = cash_balance + $1, updated_at = NOW() WHERE id = $2',
+        [Number(o.escrow_cash), wid],
+      )
+    }
+    await client.query(
+      `UPDATE limit_order SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
+      [oid],
+    )
+    await logWalletEvent(client, wid, 'limit_order_cancelled', { orderId: oid })
+    await client.query('COMMIT')
+    res.json({ ok: true, id: oid })
+  } catch (e) {
+    try { await client.query('ROLLBACK') } catch (_r) { /* noop */ }
+    res.status(500).json({ statusMessage: e.message || 'Erreur serveur' })
+  } finally {
+    client.release()
+  }
+})
+
+apiV1.get('/wallets/:id/performance', authIfEnabled, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ statusMessage: 'id invalide' })
+  try {
+    const w = (await pool.query('SELECT * FROM wallet WHERE id = $1', [id])).rows[0]
+    if (!w) return res.status(404).json({ statusMessage: 'Wallet introuvable' })
+    const fromQ = req.query.from
+    const toQ = req.query.to
+    const vals = [id]
+    let p = 2
+    let timeClause = ''
+    if (fromQ) { timeClause += ` AND created_at >= $${p++}`; vals.push(new Date(String(fromQ))) }
+    if (toQ) { timeClause += ` AND created_at <= $${p++}`; vals.push(new Date(String(toQ))) }
+    const { rows } = await pool.query(
+      `SELECT * FROM trade WHERE wallet_id = $1${timeClause} ORDER BY created_at ASC, id ASC`,
+      vals,
+    )
+    const init = Number(w.initial_balance)
+    const perf = computeWalletPerformanceFromTrades(rows, init)
+    res.json(perf)
+  } catch (e) {
+    res.status(500).json({ statusMessage: e.message || 'Erreur serveur' })
+  }
+})
+
+apiV1.get('/alerts', authIfEnabled, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM price_alert ORDER BY id DESC')
+    res.json(rows.map(mapPriceAlertRow))
+  } catch (e) { res.status(500).json({ statusMessage: e.message || 'Erreur serveur' }) }
+})
+
+apiV1.post('/alerts', authIfEnabled, async (req, res) => {
+  const b = req.body || {}
+  const pair = String(b.pair ?? '').toUpperCase()
+  if (!/^[A-Z0-9]{3,20}$/.test(pair)) return res.status(400).json({ statusMessage: 'Pair invalide' })
+  const op = b.op
+  if (op !== 'above' && op !== 'below') return res.status(400).json({ statusMessage: '`op` = above|below' })
+  const target = Number(b.targetPrice)
+  if (!Number.isFinite(target) || target <= 0) return res.status(400).json({ statusMessage: 'targetPrice invalide' })
+  const walletId = b.walletId != null ? Number(b.walletId) : null
+  const oneShot = b.oneShot !== false
+  const webhook = typeof b.webhookUrl === 'string' ? b.webhookUrl : null
+  const label = typeof b.label === 'string' ? b.label.slice(0, 120) : null
+  const cool = Number(b.cooldownMs ?? 60000)
+  try {
+    const ins = await pool.query(
+      `INSERT INTO price_alert (wallet_id, pair, op, target_price, one_shot, webhook_url, cooldown_ms, label, active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true) RETURNING *`,
+      [walletId, pair, op, target, oneShot, webhook, Number.isFinite(cool) ? cool : 60000, label],
+    )
+    res.status(201).json(mapPriceAlertRow(ins.rows[0]))
+  } catch (e) { res.status(500).json({ statusMessage: e.message || 'Erreur serveur' }) }
+})
+
+apiV1.patch('/alerts/:id', authIfEnabled, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ statusMessage: 'id invalide' })
+  const b = req.body || {}
+  const cur = (await pool.query('SELECT * FROM price_alert WHERE id = $1', [id])).rows[0]
+  if (!cur) return res.status(404).json({ statusMessage: 'Introuvable' })
+  const active = b.active != null ? Boolean(b.active) : cur.active
+  const webhookUrl = b.webhookUrl !== undefined
+    ? (typeof b.webhookUrl === 'string' ? b.webhookUrl : null)
+    : cur.webhook_url
+  try {
+    const r = await pool.query(
+      'UPDATE price_alert SET active = $2, webhook_url = $3, updated_at = NOW() WHERE id = $1 RETURNING *',
+      [id, active, webhookUrl],
+    )
+    res.json(mapPriceAlertRow(r.rows[0]))
+  } catch (e) { res.status(500).json({ statusMessage: e.message || 'Erreur serveur' }) }
+})
+
+apiV1.delete('/alerts/:id', authIfEnabled, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ statusMessage: 'id invalide' })
+  try {
+    const r = await pool.query('DELETE FROM price_alert WHERE id = $1', [id])
+    if (r.rowCount === 0) return res.status(404).json({ statusMessage: 'Introuvable' })
+    res.json({ ok: true, id })
+  } catch (e) { res.status(500).json({ statusMessage: e.message || 'Erreur serveur' }) }
+})
+
 // ─── Reset & duplicate ─────────────────────────────────────────────────────
 
 apiV1.post('/wallets/:id/reset', authIfEnabled, async (req, res) => {
@@ -832,6 +1162,7 @@ apiV1.post('/wallets/:id/reset', authIfEnabled, async (req, res) => {
     if (!current) { await client.query('ROLLBACK'); return res.status(404).json({ statusMessage: 'Wallet introuvable' }) }
     if (current.archived_at) { await client.query('ROLLBACK'); return res.status(422).json({ statusMessage: 'Wallet archivé — restaurez-le avant de le reset' }) }
 
+    await client.query('DELETE FROM limit_order WHERE wallet_id = $1', [id])
     await client.query('DELETE FROM position WHERE wallet_id = $1', [id])
     await client.query('DELETE FROM trade WHERE wallet_id = $1', [id])
     const updated = await client.query(
@@ -909,6 +1240,10 @@ app.use('/api', apiV1)
 await initDb()
 await ensureAtLeastOneWallet()
 
+setInterval(() => {
+  runBackgroundJobs().catch((e) => console.error('[paper-trade jobs]', e.message))
+}, JOB_TICK_MS)
+
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[paper-trade-api] listening on 0.0.0.0:${PORT}`)
+  console.log(`[paper-trade-api] listening on 0.0.0.0:${PORT} (jobs every ${JOB_TICK_MS}ms)`)
 })

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import type { OrderSide } from '~~/shared/types/portfolio'
+import type { OrderSide, LimitOrderRecord, OrderSubmitResult } from '~~/shared/types/portfolio'
 
 // ─────────────────────────────────────────────────────────────────────────────
-// OrderTicket — ordre market paper-trading.
-// Saisie en USDC (notional) ; quantité base asset calculée côté UI.
+// OrderTicket — ordres market et limite (GTC).
+// Saisie en USDC (notional) ; quantité en base = notional / prix.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const props = defineProps<{
@@ -28,8 +28,38 @@ const ui = useUiPreferencesStore()
 
 const hasActiveWallet = computed(() => wallets.activeId !== null)
 
+type BookMode = 'market' | 'limit'
+const bookMode = ref<BookMode>('market')
 const side = ref<OrderSide>('buy')
+const limitPriceStr = ref('') // prix cible (limite)
 const amount = ref<string>('') // saisie USDC (string pour autoriser ",")
+const openForPair = ref<LimitOrderRecord[]>([])
+
+const limitPrice = computed(() => {
+  const n = Number.parseFloat(limitPriceStr.value.replace(',', '.'))
+  return Number.isFinite(n) && n > 0 ? n : 0
+})
+
+/** Prix d’exécution : limite = saisie ; market = last. */
+const bookPrice = computed(() =>
+  bookMode.value === 'limit' ? limitPrice.value : props.price,
+)
+
+async function loadOpenLimits() {
+  if (!wallets.activeId) {
+    openForPair.value = []
+    return
+  }
+  try {
+    const all = await $fetch<LimitOrderRecord[]>(`/api/wallets/${wallets.activeId}/limit-orders`, {
+      query: { status: 'open' },
+    })
+    openForPair.value = all.filter((o) => o.pair === props.pair)
+  } catch {
+    openForPair.value = []
+  }
+}
+
 const feedback = ref<{ type: 'ok' | 'err'; text: string } | null>(null)
 const feedbackTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 
@@ -57,13 +87,25 @@ const parsedAmount = computed(() => {
   return Number.isFinite(n) && n > 0 ? n : 0
 })
 
+const limitPreviewQty = computed(() => {
+  if (!limitPrice.value || !parsedAmount.value) return 0
+  return parsedAmount.value / limitPrice.value
+})
+
+const refPx = computed(() =>
+  bookMode.value === 'limit' && limitPrice.value > 0 ? limitPrice.value : props.price,
+)
+
+onMounted(() => { loadOpenLimits() })
+watch([() => wallets.activeId, () => props.pair, bookMode], () => { loadOpenLimits() })
+
 const stopLossPrice = computed(() => {
-  if (stopLossPct.value === null || !props.price) return null
-  return props.price * (1 - stopLossPct.value / 100)
+  if (stopLossPct.value === null || !refPx.value) return null
+  return refPx.value * (1 - stopLossPct.value / 100)
 })
 const takeProfitPrice = computed(() => {
-  if (takeProfitPct.value === null || !props.price) return null
-  return props.price * (1 + takeProfitPct.value / 100)
+  if (takeProfitPct.value === null || !refPx.value) return null
+  return refPx.value * (1 + takeProfitPct.value / 100)
 })
 const riskReward = computed(() => {
   if (stopLossPct.value === null || takeProfitPct.value === null) return null
@@ -101,17 +143,19 @@ function clearPlan() {
 
 /** Plafond USDC utilisable pour l'ordre courant (inclut les frais pour un buy). */
 const maxNotional = computed(() => {
+  const px = bookPrice.value > 0 ? bookPrice.value : props.price
   if (side.value === 'buy') {
     return cashAvailable.value / (1 + feeBps / 10_000)
   }
-  return qtyAvailable.value * props.price
+  return qtyAvailable.value * px
 })
 
 const fee = computed(() => (parsedAmount.value * feeBps) / 10_000)
 
-const quantity = computed(() =>
-  props.price > 0 ? parsedAmount.value / props.price : 0,
-)
+const quantity = computed(() => {
+  const px = bookPrice.value > 0 ? bookPrice.value : props.price
+  return px > 0 ? parsedAmount.value / px : 0
+})
 
 const totalCost = computed(() =>
   side.value === 'buy' ? parsedAmount.value + fee.value : parsedAmount.value - fee.value,
@@ -120,8 +164,12 @@ const totalCost = computed(() =>
 const canSubmit = computed(() => {
   if (placing.value) return false
   if (!hasActiveWallet.value) return false
-  if (!props.price || props.price <= 0) return false
   if (parsedAmount.value <= 0) return false
+  if (bookMode.value === 'limit') {
+    if (limitPrice.value <= 0) return false
+  } else {
+    if (!props.price || props.price <= 0) return false
+  }
   if (side.value === 'buy' && totalCost.value > cashAvailable.value + 1e-9) return false
   if (side.value === 'sell' && quantity.value > qtyAvailable.value + 1e-9) return false
   return true
@@ -129,13 +177,17 @@ const canSubmit = computed(() => {
 
 const submitLabel = computed(() => {
   if (!hasActiveWallet.value) return 'Aucun wallet actif'
-  if (!props.price || props.price <= 0) return 'Prix indisponible'
+  if (bookMode.value === 'market' && (!props.price || props.price <= 0)) return 'Prix indisponible'
+  if (bookMode.value === 'limit' && limitPrice.value <= 0) return 'Prix limite requis'
   if (parsedAmount.value <= 0) return 'Entrer un montant'
   if (side.value === 'buy' && totalCost.value > cashAvailable.value + 1e-9) {
     return 'Cash insuffisant'
   }
   if (side.value === 'sell' && quantity.value > qtyAvailable.value + 1e-9) {
     return 'Position insuffisante'
+  }
+  if (bookMode.value === 'limit') {
+    return side.value === 'buy' ? 'Placer achat limite' : 'Placer vente limite'
   }
   return side.value === 'buy'
     ? `Acheter ${props.symbol ?? props.pair}`
@@ -160,30 +212,61 @@ function flashFeedback(type: 'ok' | 'err', text: string, ttl = 4000) {
   feedbackTimer.value = setTimeout(() => { feedback.value = null }, ttl)
 }
 
+function isMarketFill(res: OrderSubmitResult): res is Extract<OrderSubmitResult, { orderType: 'market' }> {
+  return res.orderType === 'market'
+}
+
 async function submit() {
   if (!canSubmit.value) return
   const notional = parsedAmount.value
   try {
-    const res = await placeOrder({ pair: props.pair, side: side.value, notional })
-    const label = side.value === 'buy' ? 'Achat' : 'Vente'
-    const summary = `${fmtQty(res.trade.quantity)} ${props.symbol ?? props.pair} à $${fmtPrice(res.trade.price)}`
-    flashFeedback('ok', `${label} exécuté : ${summary}`)
-    toasts.success(summary, {
-      title: `${label} ${props.symbol ?? props.pair}`,
-      actionLabel: 'Voir wallets',
-      action: () => navigateTo('/wallets'),
-    })
-    emit('filled', {
-      side: side.value,
-      notional,
-      quantity: res.trade.quantity,
-      price: res.trade.price,
-    })
+    const res = bookMode.value === 'limit'
+      ? await placeOrder({
+          type:       'limit',
+          pair:       props.pair,
+          side:       side.value,
+          notional,
+          limitPrice: limitPrice.value,
+        })
+      : await placeOrder({ pair: props.pair, side: side.value, notional })
+    if (isMarketFill(res)) {
+      const label = side.value === 'buy' ? 'Achat' : 'Vente'
+      const summary = `${fmtQty(res.trade.quantity)} ${props.symbol ?? props.pair} à $${fmtPrice(res.trade.price)}`
+      flashFeedback('ok', `${label} exécuté : ${summary}`)
+      toasts.success(summary, {
+        title:       `${label} ${props.symbol ?? props.pair}`,
+        actionLabel: 'Voir wallets',
+        action:      () => navigateTo('/wallets'),
+      })
+      emit('filled', {
+        side:     side.value,
+        notional,
+        quantity: res.trade.quantity,
+        price:    res.trade.price,
+      })
+    } else {
+      toasts.success(`Ordre limite #${res.limitOrder.id}`, { title: 'En carnet' })
+      flashFeedback('ok', 'Ordre limite enregistré. Exécution dès le prix atteint.')
+    }
     resetAmount()
+    await loadOpenLimits()
   } catch (err) {
     const msg = (err as Error).message
     flashFeedback('err', msg)
     toasts.danger(msg, { title: 'Ordre refusé' })
+  }
+}
+
+async function cancelOpenLimit(oid: number) {
+  const wid = wallets.activeId
+  if (!wid) return
+  try {
+    await $fetch(`/api/wallets/${wid}/limit-orders/${oid}`, { method: 'DELETE' })
+    toasts.info('Ordre annulé', { title: `Limite #${oid}` })
+    await loadOpenLimits()
+    await wallets.fetchAll()
+  } catch (err) {
+    toasts.danger((err as Error).message, { title: 'Annulation impossible' })
   }
 }
 
@@ -202,7 +285,25 @@ onBeforeUnmount(() => {
 <template>
   <section class="ticket">
     <header class="ticket-head">
-      <h3>Ordre market</h3>
+      <h3>Carnet</h3>
+      <div class="book-modes" role="tablist" aria-label="Type d'ordre">
+        <button
+          type="button"
+          class="book-tab"
+          role="tab"
+          :class="{ active: bookMode === 'market' }"
+          :aria-selected="bookMode === 'market'"
+          @click="bookMode = 'market'"
+        >Market</button>
+        <button
+          type="button"
+          class="book-tab"
+          role="tab"
+          :class="{ active: bookMode === 'limit' }"
+          :aria-selected="bookMode === 'limit'"
+          @click="bookMode = 'limit'"
+        >Limite</button>
+      </div>
       <div class="side-tabs" role="radiogroup" aria-label="Sens de l'ordre">
         <button
           type="button"
@@ -241,6 +342,23 @@ onBeforeUnmount(() => {
     </dl>
 
     <form class="form" @submit.prevent="submit">
+      <label v-if="bookMode === 'limit'" class="amount limit-px">
+        <span class="amount-label">Prix limite (USDC)</span>
+        <div class="amount-input">
+          <span class="amount-prefix">$</span>
+          <input
+            v-model="limitPriceStr"
+            type="text"
+            inputmode="decimal"
+            placeholder="ex. 65000"
+            autocomplete="off"
+            :disabled="placing"
+          >
+        </div>
+        <p v-if="bookMode === 'limit' && parsedAmount > 0 && limitPrice > 0" class="hint-px">
+          Qty cible : {{ fmtQty(limitPreviewQty) }} {{ symbol ?? pair }}
+        </p>
+      </label>
       <label class="amount">
         <span class="amount-label">Montant (USDC)</span>
         <div class="amount-input">
@@ -271,7 +389,7 @@ onBeforeUnmount(() => {
       <dl class="preview">
         <div>
           <dt>Prix</dt>
-          <dd>${{ fmtPrice(price) }}</dd>
+          <dd>{{ (bookMode === 'limit' && !limitPrice) || (bookMode === 'market' && !price) ? '—' : ('$' + fmtPrice(bookPrice)) }}</dd>
         </div>
         <div>
           <dt>Quantité</dt>
@@ -348,6 +466,16 @@ onBeforeUnmount(() => {
         </p>
       </section>
 
+      <ul v-if="openForPair.length" class="open-orders" aria-label="Ordres limite ouverts sur cette pair">
+        <li v-for="o in openForPair" :key="o.id" class="open-orders-row">
+          <span>
+            <strong>{{ o.side === 'buy' ? 'Achat' : 'Vente' }}</strong>
+            <span class="px">&nbsp;@ ${{ fmtPrice(o.limitPrice) }} · {{ fmtQty(o.quantity) }} {{ symbol ?? pair }}</span>
+          </span>
+          <button type="button" class="btn-cancel" :disabled="placing" @click="cancelOpenLimit(o.id)">Annuler</button>
+        </li>
+      </ul>
+
       <button
         type="submit"
         class="submit"
@@ -387,6 +515,56 @@ onBeforeUnmount(() => {
     font-weight: $fw-semibold;
     margin: 0;
   }
+}
+
+.book-modes {
+  display: flex;
+  gap: $space-2xs;
+  .book-tab {
+    flex: 1;
+    font-size: $fs-xs;
+    font-weight: $fw-medium;
+    padding: $space-2xs $space-sm;
+    border-radius: $radius-sm;
+    border: 1px solid $color-border;
+    background: $color-bg;
+    color: $color-text-muted;
+    cursor: pointer;
+    &.active {
+      background: $color-surface-2;
+      color: $color-text;
+      border-color: $color-border-hover;
+    }
+  }
+}
+
+.hint-px { font-size: $fs-3xs; color: $color-text-dim; margin: 0; }
+
+.open-orders {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 $space-sm;
+  @include stack($space-2xs);
+  font-size: $fs-2xs;
+  color: $color-text-muted;
+  border-top: 1px dashed $color-border;
+  padding-top: $space-sm;
+}
+.open-orders-row {
+  @include flex-between;
+  align-items: center;
+  .px { font-family: $font-mono; }
+}
+.btn-cancel {
+  font-size: $fs-3xs;
+  padding: 2px 8px;
+  border: 1px solid $color-border;
+  background: $color-surface-2;
+  color: $color-text-muted;
+  border-radius: $radius-sm;
+  cursor: pointer;
+  &:hover { color: $color-danger; border-color: $color-danger; }
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 
 .side-tabs {

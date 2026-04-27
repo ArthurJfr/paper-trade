@@ -1,3 +1,5 @@
+import { ofetch } from 'ofetch'
+
 /**
  * DELETE /api/wallets/:id
  * Query : ?hard=true pour une suppression définitive (cascade positions+trades).
@@ -7,7 +9,7 @@ export default defineEventHandler(async (event): Promise<{ ok: boolean; id: numb
   const config = useRuntimeConfig()
   const id = getRouterParam(event, 'id')
   const q = getQuery(event)
-  return await $fetch(`${config.backendApiBasePath}/wallets/${id}`, {
+  return await ofetch(`${config.backendApiBasePath}/wallets/${id}`, {
     method: 'DELETE',
     baseURL: config.backendApiUrl,
     headers: getHeaders(event) as HeadersInit,

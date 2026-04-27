@@ -45,6 +45,7 @@ const navGroups: readonly NavGroup[] = [
     id: 'review',
     label: 'Revue',
     items: [
+      { to: '/alerts',   label: 'Alertes',  icon: 'ph:bell-bold' },
       { to: '/journal',  label: 'Journal',   icon: 'ph:notebook-bold', beta: true },
       { to: '/settings', label: 'Réglages',  icon: 'ph:gear-six-bold', beta: true },
     ],
@@ -233,7 +234,8 @@ onMounted(() => {
           <UiIconButton
             icon="ph:bell-bold"
             variant="ghost"
-            ariaLabel="Notifications"
+            ariaLabel="Alertes prix"
+            @click="navigateTo('/alerts')"
           />
         </div>
       </header>

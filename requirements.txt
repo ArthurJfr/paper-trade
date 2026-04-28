@@ -1,0 +1,17 @@
+# Core data processing
+numpy
+pandas
+pyarrow
+requests
+
+# Modeling
+scikit-learn
+joblib
+
+# Notebook and visualization
+jupyter
+matplotlib
+seaborn
+
+# MongoDB
+pymongo

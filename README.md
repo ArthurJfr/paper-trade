@@ -194,6 +194,147 @@ PAPER_TRADE_JOB_TICK_MS=3000   # intervalle d’exécution des ordres limites + 
 
 ---
 
+## 🧪 Pipeline Data/ML (BTC) — commandes complètes
+
+Cette section regroupe toutes les commandes de la chaîne data -> features -> modèle -> backtest -> notebook.
+
+### 0) Prérequis Python
+
+```bash
+# depuis la racine du projet
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 1) Données BTC (fetch + qualité)
+
+```bash
+# Rebuild historique 12 mois (BTCUSDT 15m)
+python3 tools/data/fetch_btc_klines.py \
+  --symbol BTCUSDT \
+  --interval 15m \
+  --days 365 \
+  --mode historical
+
+# Validation qualité
+python3 tools/data/validate_btc_data.py \
+  --input data/clean/btcusdt_15m_clean.parquet \
+  --report-out data/reports/btcusdt_15m_quality.json \
+  --strict
+
+# Mise à jour incrémentale (runs suivants)
+python3 tools/data/fetch_btc_klines.py \
+  --symbol BTCUSDT \
+  --interval 15m \
+  --days 365 \
+  --mode incremental
+```
+
+### 2) Features + label
+
+```bash
+python3 tools/data/build_btc_features.py \
+  --input data/clean/btcusdt_15m_clean.parquet \
+  --output data/features/btcusdt_15m_features.parquet \
+  --label-horizon 3 \
+  --csv-debug
+
+python3 tools/data/validate_btc_features.py \
+  --input data/features/btcusdt_15m_features.parquet \
+  --report-out data/reports/btcusdt_15m_features_quality.json \
+  --strict
+```
+
+### 3) Baseline modèle (phase 3)
+
+```bash
+python3 tools/data/train_baseline_btc.py \
+  --input data/features/btcusdt_15m_features.parquet \
+  --metrics-out data/reports/btcusdt_15m_model_metrics.json \
+  --predictions-out data/predictions/btcusdt_15m_test_predictions.parquet \
+  --model-out data/models/btcusdt_15m_baseline.joblib \
+  --random-state 42
+
+python3 tools/data/validate_model_outputs.py \
+  --metrics data/reports/btcusdt_15m_model_metrics.json \
+  --predictions data/predictions/btcusdt_15m_test_predictions.parquet \
+  --model data/models/btcusdt_15m_baseline.joblib \
+  --strict
+```
+
+### 4) Backtest réaliste (phase 4)
+
+```bash
+python3 tools/data/run_backtest_btc.py \
+  --predictions data/predictions/btcusdt_15m_test_predictions.parquet \
+  --trades-out data/backtests/btcusdt_15m_trades.parquet \
+  --equity-out data/backtests/btcusdt_15m_equity_curve.parquet \
+  --report-out data/reports/btcusdt_15m_backtest_report.json \
+  --fee-bps 10 \
+  --slippage-bps 5 \
+  --initial-equity 10000
+
+python3 tools/data/validate_backtest_outputs.py \
+  --report data/reports/btcusdt_15m_backtest_report.json \
+  --trades data/backtests/btcusdt_15m_trades.parquet \
+  --equity data/backtests/btcusdt_15m_equity_curve.parquet \
+  --strict
+```
+
+### 5) Risk grid search (phase 5)
+
+```bash
+python3 tools/data/run_backtest_phase5.py \
+  --predictions data/predictions/btcusdt_15m_test_predictions.parquet \
+  --clean data/clean/btcusdt_15m_clean.parquet \
+  --grid-results-out data/reports/btcusdt_15m_phase5_grid_results.json \
+  --top-results-out data/reports/btcusdt_15m_phase5_top_configs.json \
+  --best-report-out data/reports/btcusdt_15m_phase5_best_report.json \
+  --best-trades-out data/backtests/btcusdt_15m_phase5_best_trades.parquet \
+  --best-equity-out data/backtests/btcusdt_15m_phase5_best_equity.parquet \
+  --fee-bps 10 \
+  --slippage-bps 5 \
+  --initial-equity 10000
+
+python3 tools/data/validate_phase5_outputs.py \
+  --grid data/reports/btcusdt_15m_phase5_grid_results.json \
+  --top data/reports/btcusdt_15m_phase5_top_configs.json \
+  --best-report data/reports/btcusdt_15m_phase5_best_report.json \
+  --best-trades data/backtests/btcusdt_15m_phase5_best_trades.parquet \
+  --best-equity data/backtests/btcusdt_15m_phase5_best_equity.parquet \
+  --strict
+```
+
+### 6) MongoDB pour Notebook (candles BTC)
+
+```bash
+# Lancer MongoDB + interface mongo-express
+docker compose --profile tools up -d mongo mongo-express
+
+# Charger les candles clean dans Mongo
+python3 tools/data/load_btc_to_mongo.py \
+  --input data/clean/btcusdt_15m_clean.parquet \
+  --mongo-uri mongodb://localhost:27017 \
+  --db paper_trade_data \
+  --collection btc_15m_clean
+```
+
+Accès interfaces:
+- App: http://localhost:3000
+- API health: http://localhost:4000/health
+- Adminer (Postgres): http://localhost:8080
+- Mongo Express: http://localhost:8081
+
+### 7) Notebook CRISP-DM
+
+```bash
+# Depuis la racine du projet, avec venv actif
+jupyter notebook tools/data/notebooks/btc_crisp_dm_report.ipynb
+```
+
+---
+
 ## 🛣️ Roadmap (état)
 
 - **Visu / marché** : heatmap, fiche paire, chart bougies, top movers — **livré**
